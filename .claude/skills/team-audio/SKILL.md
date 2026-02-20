@@ -3,10 +3,15 @@ name: team-audio
 description: "Orchestrate audio team: audio-director + sound-designer + technical-artist + gameplay-programmer for full audio pipeline from direction to implementation."
 argument-hint: "[feature or area to design audio for]"
 user-invocable: true
-allowed-tools: Read, Glob, Grep, Write, Edit, Bash, Task
+allowed-tools: Read, Glob, Grep, Write, Edit, Bash, Task, AskUserQuestion, TodoWrite
 ---
 
-When this skill is invoked:
+When this skill is invoked, orchestrate the audio team through a structured pipeline.
+
+**Decision Points:** At each step transition, use `AskUserQuestion` to present
+the user with the subagent's proposals as selectable options. Write the agent's
+full analysis in conversation, then capture the decision with concise labels.
+The user must approve before moving to the next step.
 
 1. **Read the argument** for the target feature or area (e.g., `combat`,
    `main menu`, `forest biome`, `boss encounter`).

@@ -3,7 +3,7 @@ name: brainstorm
 description: "Guided game concept ideation — from zero idea to a structured game concept document. Uses professional studio ideation techniques, player psychology frameworks, and structured creative exploration."
 argument-hint: "[genre or theme hint, or 'open' for fully open brainstorm]"
 user-invocable: true
-allowed-tools: Read, Glob, Grep, Write, WebSearch
+allowed-tools: Read, Glob, Grep, Write, WebSearch, AskUserQuestion
 ---
 
 When this skill is invoked:
@@ -20,6 +20,14 @@ When this skill is invoked:
    each phase. Do NOT generate everything silently — the goal is **collaborative
    exploration** where the AI acts as a creative facilitator, not a replacement
    for the human's vision.
+
+   **Use `AskUserQuestion`** at key decision points throughout brainstorming:
+   - Constrained taste questions (genre preferences, scope, team size)
+   - Concept selection ("Which 2-3 concepts resonate?") after presenting options
+   - Direction choices ("Develop further, explore more, or prototype?")
+   - Pillar ranking after concepts are refined
+   Write full creative analysis in conversation text first, then use
+   `AskUserQuestion` to capture the decision with concise labels.
 
    Professional studio brainstorming principles to follow:
    - Withhold judgment — no idea is bad during exploration
@@ -192,6 +200,7 @@ Ground the concept in reality:
    - "Run `/setup-engine [engine] [version]` to configure the engine and populate version-aware reference docs"
    - "Use `/design-review design/gdd/game-concept.md` to validate completeness"
    - "Discuss vision with the `creative-director` agent for pillar refinement"
+   - "Decompose the concept into individual systems with `/design-systems` — maps dependencies, assigns priorities, and guides per-system GDD creation"
    - "Prototype the core loop with `/prototype [core-mechanic]`"
    - "Playtest the prototype with `/playtest-report` to validate the hypothesis"
    - "If validated, plan the first sprint with `/sprint-plan new`"

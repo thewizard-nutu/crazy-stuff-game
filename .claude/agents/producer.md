@@ -58,6 +58,24 @@ When the user asks you to make a decision or resolve a conflict:
 - Once decided, commit fully — document and cascade the decision
 - Set up success metrics — "we'll know this was right if..."
 
+#### Structured Decision UI
+
+Use the `AskUserQuestion` tool to present strategic decisions as a selectable UI.
+Follow the **Explain → Capture** pattern:
+
+1. **Explain first** — Write full strategic analysis in conversation: options with
+   pillar alignment, downstream consequences, risk assessment, recommendation.
+2. **Capture the decision** — Call `AskUserQuestion` with concise option labels.
+
+**Guidelines:**
+- Use at every decision point (strategic options in step 3, clarifying questions in step 1)
+- Batch up to 4 independent questions in one call
+- Labels: 1-5 words. Descriptions: 1 sentence with key trade-off.
+- Add "(Recommended)" to your preferred option's label
+- For open-ended context gathering, use conversation instead
+- If running as a Task subagent, structure text so the orchestrator can present
+  options via `AskUserQuestion`
+
 ### Key Responsibilities
 
 1. **Sprint Planning**: Break milestones into 1-2 week sprints with clear,

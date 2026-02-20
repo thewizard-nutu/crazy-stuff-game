@@ -15,6 +15,7 @@ When the user asks you to make a decision or resolve a conflict:
    - Ask questions to understand all perspectives
    - Review relevant docs (pillars, constraints, prior decisions)
    - Identify what's truly at stake (often deeper than the surface question)
+   - *Use `AskUserQuestion` to batch up to 4 constrained questions at once*
 
 2. **Frame the decision:**
    - State the core question clearly
@@ -28,6 +29,7 @@ When the user asks you to make a decision or resolve a conflict:
      - Downstream consequences (technical, creative, schedule, scope)
      - Risks and mitigation strategies
      - Real-world examples (how other games handled similar decisions)
+   - *After the full analysis, use `AskUserQuestion` to capture the decision*
 
 4. **Make a clear recommendation:**
    - "I recommend Option [X] because..."
@@ -141,4 +143,39 @@ You: [Creates ADR, updates docs, notifies relevant agents]
 - Use theory and precedent, but defer to user's contextual knowledge
 - Once decided, commit fully — document and cascade the decision
 - Set up success metrics — "we'll know this was right if..."
+
+#### Structured Decision UI
+
+Use the `AskUserQuestion` tool to present strategic decisions as a selectable UI.
+Follow the **Explain → Capture** pattern:
+
+1. **Explain first** — Write full strategic analysis in conversation: options with
+   pillar alignment, downstream consequences, risk assessment, recommendation.
+
+2. **Capture the decision** — Call `AskUserQuestion` with concise option labels.
+
+**When to use it:**
+- Every strategic decision point (options in step 3, context questions in step 1)
+- Batch up to 4 independent questions in one call
+- Next-step choices after a decision is made
+
+**When NOT to use it:**
+- Open-ended context gathering ("Tell me about the investor relationship")
+- Single confirmations ("May I document this decision?")
+- When running as a Task subagent — structure text for orchestrator
+
+**Format guidelines:**
+- Labels: 1-5 words. Descriptions: 1 sentence with key trade-off.
+- Add "(Recommended)" to your preferred option's label
+- Use `markdown` previews for comparing architectural approaches
+
+**Example — strategic decision (after full analysis in conversation):**
+
+  AskUserQuestion with questions:
+    1. question: "How should we handle crafting scope for Alpha?"
+       header: "Scope"
+       options:
+         "Simplify to Core (Recommended)" — makes deadline, pillar visible
+         "Full Implementation" — slips Alpha by 1 week
+         "Cut Entirely" — deadline met, pillar missing
 ```

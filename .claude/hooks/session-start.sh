@@ -54,5 +54,22 @@ if [ -d "src" ]; then
     fi
 fi
 
+# --- Active session state recovery ---
+STATE_FILE="production/session-state/active.md"
+if [ -f "$STATE_FILE" ]; then
+    echo ""
+    echo "=== ACTIVE SESSION STATE DETECTED ==="
+    echo "A previous session left state at: $STATE_FILE"
+    echo "Read this file to recover context and continue where you left off."
+    echo ""
+    echo "Quick summary:"
+    head -20 "$STATE_FILE" 2>/dev/null
+    TOTAL_LINES=$(wc -l < "$STATE_FILE" 2>/dev/null)
+    if [ "$TOTAL_LINES" -gt 20 ]; then
+        echo "  ... ($TOTAL_LINES total lines — read the full file to continue)"
+    fi
+    echo "=== END SESSION STATE PREVIEW ==="
+fi
+
 echo "==================================="
 exit 0

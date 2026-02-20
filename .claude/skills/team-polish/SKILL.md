@@ -3,9 +3,14 @@ name: team-polish
 description: "Orchestrate the polish team: coordinates performance-analyst, technical-artist, sound-designer, and qa-tester to optimize, polish, and harden a feature or area for release quality."
 argument-hint: "[feature or area to polish]"
 user-invocable: true
-allowed-tools: Read, Glob, Grep, Write, Edit, Bash, Task
+allowed-tools: Read, Glob, Grep, Write, Edit, Bash, Task, AskUserQuestion, TodoWrite
 ---
 When this skill is invoked, orchestrate the polish team through a structured pipeline.
+
+**Decision Points:** At each phase transition, use `AskUserQuestion` to present
+the user with the subagent's proposals as selectable options. Write the agent's
+full analysis in conversation, then capture the decision with concise labels.
+The user must approve before moving to the next phase.
 
 ## Team Composition
 - **performance-analyst** — Profiling, optimization, memory analysis, frame budget

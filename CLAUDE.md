@@ -26,10 +26,6 @@ Each agent owns a specific domain, enforcing separation of concerns and quality.
 
 @.claude/docs/technical-preferences.md
 
-## Agent Roster
-
-@.claude/docs/agent-roster.md
-
 ## Coordination Rules
 
 @.claude/docs/coordination-rules.md
@@ -49,24 +45,10 @@ See `docs/COLLABORATIVE-DESIGN-PRINCIPLE.md` for full protocol and examples.
 > **First session?** If the project has no engine configured and no game concept,
 > run `/start` to begin the guided onboarding flow.
 
-## Coding Standards & Review
+## Coding Standards
 
 @.claude/docs/coding-standards.md
-
-@.claude/docs/review-workflow.md
 
 ## Context Management
 
 @.claude/docs/context-management.md
-
-## Active Hooks
-
-@.claude/docs/hooks-reference.md
-
-## Available Skills (Slash Commands)
-
-@.claude/docs/skills-reference.md
-
-## Path-Specific Rules
-
-@.claude/docs/rules-reference.md

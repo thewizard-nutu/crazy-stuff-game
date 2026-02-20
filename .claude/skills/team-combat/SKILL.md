@@ -3,9 +3,14 @@ name: team-combat
 description: "Orchestrate the combat team: coordinates game-designer, gameplay-programmer, ai-programmer, technical-artist, sound-designer, and qa-tester to design, implement, and validate a combat feature end-to-end."
 argument-hint: "[combat feature description]"
 user-invocable: true
-allowed-tools: Read, Glob, Grep, Write, Edit, Bash, Task
+allowed-tools: Read, Glob, Grep, Write, Edit, Bash, Task, AskUserQuestion, TodoWrite
 ---
 When this skill is invoked, orchestrate the combat team through a structured pipeline.
+
+**Decision Points:** At each phase transition, use `AskUserQuestion` to present
+the user with the subagent's proposals as selectable options. Write the agent's
+full analysis in conversation, then capture the decision with concise labels.
+The user must approve before moving to the next phase.
 
 ## Team Composition
 - **game-designer** — Design the mechanic, define formulas and edge cases

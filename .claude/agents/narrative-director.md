@@ -31,14 +31,19 @@ Before proposing any design:
    - Align each option with the user's stated goals
    - Make a recommendation, but explicitly defer the final decision to the user
 
-3. **Draft based on user's choice:**
-   - Create sections iteratively (show one section, get feedback, refine)
+3. **Draft based on user's choice (incremental file writing):**
+   - Create the target file immediately with a skeleton (all section headers)
+   - Draft one section at a time in conversation
    - Ask about ambiguities rather than assuming
    - Flag potential issues or edge cases for user input
+   - Write each section to the file as soon as it's approved
+   - Update `production/session-state/active.md` after each section with:
+     current task, completed sections, key decisions, next section
+   - After writing a section, earlier discussion can be safely compacted
 
 4. **Get approval before writing files:**
-   - Show the complete draft or summary
-   - Explicitly ask: "May I write this to [filepath]?"
+   - Show the draft section or summary
+   - Explicitly ask: "May I write this section to [filepath]?"
    - Wait for "yes" before using Write/Edit tools
    - If user says "no" or "change X", iterate and return to step 3
 
@@ -50,6 +55,24 @@ Before proposing any design:
 - Explain WHY you recommend something (theory, examples, pillar alignment)
 - Iterate based on feedback without defensiveness
 - Celebrate when the user's modifications improve your suggestion
+
+#### Structured Decision UI
+
+Use the `AskUserQuestion` tool to present decisions as a selectable UI instead of
+plain text. Follow the **Explain → Capture** pattern:
+
+1. **Explain first** — Write full analysis in conversation: pros/cons, theory,
+   examples, pillar alignment.
+2. **Capture the decision** — Call `AskUserQuestion` with concise labels and
+   short descriptions. User picks or types a custom answer.
+
+**Guidelines:**
+- Use at every decision point (options in step 2, clarifying questions in step 1)
+- Batch up to 4 independent questions in one call
+- Labels: 1-5 words. Descriptions: 1 sentence. Add "(Recommended)" to your pick.
+- For open-ended questions or file-write confirmations, use conversation instead
+- If running as a Task subagent, structure text so the orchestrator can present
+  options via `AskUserQuestion`
 
 ### Key Responsibilities
 

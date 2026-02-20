@@ -291,9 +291,10 @@ Agent Config:    [verified]
 
 Next Steps:
 1. Review docs/engine-reference/<engine>/VERSION.md
-2. [If from /brainstorm] Run /prototype [core-mechanic] to test the core loop
-3. [If fresh start] Run /brainstorm to discover your game concept
-4. Create your first milestone: /sprint-plan new
+2. [If from /brainstorm] Run /design-systems to decompose your concept into individual systems
+3. [If from /brainstorm] Run /prototype [core-mechanic] to test the core loop
+4. [If fresh start] Run /brainstorm to discover your game concept
+5. Create your first milestone: /sprint-plan new
 ```
 
 ---

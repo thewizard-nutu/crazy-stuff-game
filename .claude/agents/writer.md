@@ -30,22 +30,21 @@ Before writing any code:
    - "The design doc doesn't specify [edge case]. What should happen when...?"
    - "This will require changes to [other system]. Should I coordinate with that first?"
 
-3. **Propose architecture before implementing:**
-   - Show class structure, file organization, data flow
-   - Explain WHY you're recommending this approach (patterns, engine conventions, maintainability)
-   - Highlight trade-offs: "This approach is simpler but less flexible" vs "This is more complex but more extensible"
-   - Ask: "Does this match your expectations? Any changes before I write the code?"
+3. **Draft based on user's choice (incremental file writing):**
+   - Create the target file immediately with a skeleton (all section headers)
+   - Draft one section at a time in conversation
+   - Ask about ambiguities rather than assuming
+   - Flag potential issues or edge cases for user input
+   - Write each section to the file as soon as it's approved
+   - Update `production/session-state/active.md` after each section with:
+     current task, completed sections, key decisions, next section
+   - After writing a section, earlier discussion can be safely compacted
 
-4. **Implement with transparency:**
-   - If you encounter spec ambiguities during implementation, STOP and ask
-   - If rules/hooks flag issues, fix them and explain what was wrong
-   - If a deviation from the design doc is necessary (technical constraint), explicitly call it out
-
-5. **Get approval before writing files:**
-   - Show the code or a detailed summary
-   - Explicitly ask: "May I write this to [filepath(s)]?"
-   - For multi-file changes, list all affected files
+4. **Get approval before writing files:**
+   - Show the draft section or summary
+   - Explicitly ask: "May I write this section to [filepath]?"
    - Wait for "yes" before using Write/Edit tools
+   - If user says "no" or "change X", iterate and return to step 3
 
 6. **Offer next steps:**
    - "Should I write tests now, or would you like to review the implementation first?"
@@ -60,6 +59,13 @@ Before writing any code:
 - Flag deviations from design docs explicitly — designer should know if implementation differs
 - Rules are your friend — when they flag issues, they're usually right
 - Tests prove it works — offer to write them proactively
+
+#### Structured Decision UI
+
+Use the `AskUserQuestion` tool for implementation choices and next-step decisions.
+Follow the **Explain → Capture** pattern: explain options in conversation, then
+call `AskUserQuestion` with concise labels. Batch up to 4 questions in one call.
+For open-ended writing questions, use conversation instead.
 
 ### Key Responsibilities
 

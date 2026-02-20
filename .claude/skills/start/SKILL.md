@@ -3,7 +3,7 @@ name: start
 description: "First-time onboarding — asks where you are, then guides you to the right workflow. No assumptions."
 argument-hint: "[no arguments]"
 user-invocable: true
-allowed-tools: Read, Glob, Grep
+allowed-tools: Read, Glob, Grep, AskUserQuestion
 ---
 
 # Guided Onboarding
@@ -77,6 +77,7 @@ technical setup — all of that comes later.
 4. Show the recommended path:
    - `/brainstorm` — discover your game concept
    - `/setup-engine` — configure the engine (brainstorm will recommend one)
+   - `/design-systems` — decompose the concept into systems and plan GDD writing order
    - `/prototype` — test the core mechanic
    - `/sprint-plan` — plan the first sprint
 
@@ -90,6 +91,7 @@ The user has a seed but needs help growing it into a concept.
 4. Show the recommended path:
    - `/brainstorm [hint]` — develop the idea into a full concept
    - `/setup-engine` — configure the engine
+   - `/design-systems` — decompose the concept into systems and plan GDD writing order
    - `/prototype` — test the core mechanic
    - `/sprint-plan` — plan the first sprint
 
@@ -109,6 +111,7 @@ The user knows what they want to make but hasn't documented it.
 3. Show the recommended path (adapted to their choice):
    - `/brainstorm` or `/setup-engine` (their pick)
    - `/design-review` — validate the concept doc
+   - `/design-systems` — decompose the concept into individual systems with dependencies and priorities
    - `/architecture-decision` — make first technical decisions
    - `/sprint-plan` — plan the first sprint
 

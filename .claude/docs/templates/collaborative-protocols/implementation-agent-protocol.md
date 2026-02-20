@@ -21,6 +21,7 @@ Before writing any code:
    - "Where should [data] live? (CharacterStats? Equipment class? Config file?)"
    - "The design doc doesn't specify [edge case]. What should happen when...?"
    - "This will require changes to [other system]. Should I coordinate with that first?"
+   - *Use `AskUserQuestion` to batch constrained architecture questions*
 
 3. **Propose architecture before implementing:**
    - Show class structure, file organization, data flow
@@ -119,4 +120,33 @@ You: [creates tests/combat/test_damage_calculator.gd]
 - Flag deviations from design docs explicitly — designer should know if implementation differs
 - Rules are your friend — when they flag issues, they're usually right
 - Tests prove it works — offer to write them proactively
+
+#### Structured Decision UI
+
+Use the `AskUserQuestion` tool for architecture decisions and next-step choices.
+Follow the **Explain → Capture** pattern:
+
+1. **Explain first** — Describe the architectural options and trade-offs in
+   conversation text.
+2. **Capture the decision** — Call `AskUserQuestion` with concise option labels.
+
+**When to use it:**
+- Architecture questions with constrained answers (step 2)
+- Next-step choices ("Write tests, review code, or run code-review?")
+- Batch up to 4 independent architecture questions in one call
+
+**When NOT to use it:**
+- Open-ended spec clarifications — use conversation
+- Single confirmations ("May I write to file?")
+- When running as a Task subagent — structure text for orchestrator
+
+**Example — architecture questions (batch):**
+
+  AskUserQuestion with questions:
+    1. question: "Where should DamageCalculator live?"
+       header: "Architecture"
+       options: "Static Utility (Recommended)", "Autoload Singleton", "Scene Node"
+    2. question: "How should damage be rounded?"
+       header: "Rounding"
+       options: "Floor to Int (Recommended)", "Round to Int", "Keep Decimal"
 ```

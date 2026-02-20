@@ -62,3 +62,15 @@ When this skill is invoked:
 
 ### Verdict: [APPROVED / NEEDS REVISION / MAJOR REVISION NEEDED]
 ```
+
+9. **Contextual next step recommendations**:
+   - If the document being reviewed is `game-concept.md` or `game-pillars.md`:
+     - Check if `design/gdd/systems-index.md` exists
+     - If it does NOT exist, add to Recommendations:
+       > "This concept is ready for systems decomposition. Run `/design-systems`
+       > to break it down into individual systems with dependencies and priorities,
+       > then write per-system GDDs."
+   - If the document is an individual system GDD:
+     - Check if the systems index references this system
+     - If so, suggest updating its status: "Update the systems index status for
+       this system from 'In Design' to 'Designed'."

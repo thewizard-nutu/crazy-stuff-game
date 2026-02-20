@@ -44,7 +44,8 @@ This skill is prescriptive ("are we ready to advance?" with a formal verdict).
 ### Gate: Pre-production → Production
 
 **Required Artifacts:**
-- [ ] At least 1 GDD in `design/gdd/` (beyond game-concept.md)
+- [ ] Systems index exists at `design/gdd/systems-index.md` with at least MVP systems enumerated
+- [ ] At least 1 GDD in `design/gdd/` (beyond game-concept.md and systems-index.md)
 - [ ] At least 1 Architecture Decision Record in `docs/architecture/`
 - [ ] At least 1 prototype in `prototypes/` with a README
 - [ ] Engine reference docs exist in `docs/engine-reference/`
@@ -185,6 +186,7 @@ For items that can't be automatically verified, **ask the user**:
 
 Based on the verdict, suggest specific next steps:
 
+- **No systems index?** → `/design-systems` to decompose the concept into systems
 - **Missing design docs?** → `/reverse-document` or delegate to `game-designer`
 - **Missing ADRs?** → `/architecture-decision`
 - **Tests failing?** → delegate to `lead-programmer` or `qa-tester`

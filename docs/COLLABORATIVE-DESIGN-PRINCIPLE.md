@@ -329,6 +329,127 @@ Skill: "Writing design/concept.md..."
 
 ---
 
+## 🎛️ Structured Decision UI (AskUserQuestion)
+
+Use the `AskUserQuestion` tool to present decisions as a **selectable UI** instead
+of plain markdown text. This gives the user a clean interface to pick from options
+(or type "Other" for a custom answer).
+
+### The Explain → Capture Pattern
+
+Detailed reasoning doesn't fit in the tool's short descriptions. So use a two-step
+pattern:
+
+1. **Explain first** — Write your full expert analysis in conversation text:
+   detailed pros/cons, theory references, example games, pillar alignment. This is
+   where the reasoning lives.
+
+2. **Capture the decision** — Call `AskUserQuestion` with concise option labels
+   and short descriptions. The user picks from the UI or types a custom answer.
+
+### When to Use AskUserQuestion
+
+✅ **Use it for:**
+- Every decision point where you'd present 2-4 options
+- Initial clarifying questions with constrained answers
+- Batching up to 4 independent questions in one call
+- Next-step choices ("Draft formulas or refine rules first?")
+- Architecture decisions ("Static utility or singleton?")
+- Strategic choices ("Simplify scope, slip deadline, or cut feature?")
+
+❌ **Don't use it for:**
+- Open-ended discovery questions ("What excites you about roguelikes?")
+- Single yes/no confirmations ("May I write to file?")
+- When running as a Task subagent (tool may not be available)
+
+### Format Guidelines
+
+- **Labels**: 1-5 words (e.g., "Hybrid Discovery", "Full Randomized")
+- **Descriptions**: 1 sentence summarizing the approach and key trade-off
+- **Recommended**: Add "(Recommended)" to your preferred option's label
+- **Previews**: Use `markdown` field for comparing code structures or formulas
+- **Multi-select**: Use `multiSelect: true` when choices aren't mutually exclusive
+
+### Example — Multi-Question Batch (Clarifying Questions)
+
+After introducing the topic in conversation, batch constrained questions:
+
+```
+AskUserQuestion:
+  questions:
+    - question: "Should crafting recipes be discovered or learned?"
+      header: "Discovery"
+      options:
+        - label: "Experimentation"
+          description: "Players discover by trying combinations — high mystery"
+        - label: "NPC/Book Learning"
+          description: "Recipes taught explicitly — accessible, lower mystery"
+        - label: "Tiered Hybrid"
+          description: "Basic recipes learned, advanced discovered — best of both"
+    - question: "How punishing should failed crafts be?"
+      header: "Failure"
+      options:
+        - label: "Materials Lost"
+          description: "All consumed on failure — high stakes, risk/reward"
+        - label: "Partial Recovery"
+          description: "50% returned — moderate risk"
+        - label: "No Loss"
+          description: "Materials returned, only time spent — forgiving"
+```
+
+### Example — Design Decision (After Full Analysis)
+
+After writing the full pros/cons analysis in conversation text:
+
+```
+AskUserQuestion:
+  questions:
+    - question: "Which crafting approach fits your vision?"
+      header: "Approach"
+      options:
+        - label: "Hybrid Discovery (Recommended)"
+          description: "Discovery base with earned hints — balances exploration and accessibility"
+        - label: "Full Discovery"
+          description: "Pure experimentation — maximum mystery, risk of frustration"
+        - label: "Hint System"
+          description: "Progressive hints reveal recipes — accessible but less surprise"
+```
+
+### Example — Strategic Decision
+
+After presenting the full strategic analysis with pillar alignment:
+
+```
+AskUserQuestion:
+  questions:
+    - question: "How should we handle crafting scope for Alpha?"
+      header: "Scope"
+      options:
+        - label: "Simplify to Core (Recommended)"
+          description: "Recipe discovery only, 10 recipes — makes deadline, pillar visible"
+        - label: "Full Implementation"
+          description: "Complete system, 30 recipes — slips Alpha by 1 week"
+        - label: "Cut Entirely"
+          description: "Drop crafting, focus on combat — deadline met, pillar missing"
+```
+
+### Team Skill Orchestration
+
+In team skills, subagents return their analysis as text. The **orchestrator**
+(main session) calls `AskUserQuestion` at each decision point between phases:
+
+```
+[game-designer returns 3 combat approaches with analysis]
+
+Orchestrator uses AskUserQuestion:
+  question: "Which combat approach should we develop?"
+  options: [concise summaries of the 3 approaches]
+
+[User picks → orchestrator passes decision to next phase]
+```
+
+---
+
 ## 📄 File Writing Protocol
 
 ### NEVER Write Files Without Explicit Approval
@@ -351,6 +472,39 @@ Every file write must follow:
    Agent: [Makes requested changes]
           [Returns to step 1]
 ```
+
+### Incremental Section Writing (Design Documents)
+
+For multi-section documents (design docs, lore entries, architecture docs), write
+each section to the file as it's approved instead of building the full document
+in conversation. This prevents context overflow during long iterative sessions.
+
+```
+1. Agent creates file with skeleton (all section headers, empty bodies)
+   Agent: "May I create design/gdd/crafting-system.md with the section skeleton?"
+   User: "Yes"
+
+2. For EACH section:
+   Agent: [Drafts section in conversation]
+   User: [Reviews, requests changes]
+   Agent: [Revises until approved]
+   Agent: "May I write this section to the file?"
+   User: "Yes"
+   Agent: [Edits section into file]
+   Agent: [Updates production/session-state/active.md with progress]
+   ─── Context for this section can now be safely compacted ───
+   ─── The decisions are IN THE FILE ───
+
+3. If session crashes or compacts mid-document:
+   Agent: [Reads the file — completed sections are all there]
+   Agent: [Reads production/session-state/active.md — knows what's next]
+   Agent: "Sections 1-4 are complete. Ready to work on section 5?"
+```
+
+Why this matters: A full design doc session with 8 sections and 2-3 revision
+cycles per section can accumulate 30-50k tokens of conversation. Incremental
+writing keeps the live context at ~3-5k tokens (only the current section's
+discussion), because completed sections are persisted to disk.
 
 ### Multi-File Writes
 
@@ -455,21 +609,6 @@ The orchestration is automated, but **decision points stay with the user**.
 
 ---
 
-## 🔧 Updating All Documentation
-
-This principle needs to be embedded in:
-
-### Files to Update:
-
-1. **CLAUDE.md** — Add "Collaboration Protocol" section
-2. **WORKFLOW-GUIDE.md** — Rewrite all "What happens" sections
-3. **Agent Roster** — Add "Questions to Ask" to each agent description
-4. **.claude/agents/*.md** — Update system prompts to enforce this
-5. **Skills** — Update all skills to ask before writing
-6. **README.md** — Clarify this is collaborative, not autonomous
-
----
-
 ## ✅ Quick Validation: Is Your Session Collaborative?
 
 After any agent interaction, check:
@@ -537,14 +676,13 @@ WHEN implementing:
 
 ---
 
-## 🚀 Next Steps
+## Implementation Status
 
-To fully implement this principle:
+This principle has been fully embedded across the project:
 
-1. **Update CLAUDE.md** with collaboration protocol
-2. **Update agent definitions** to enforce question-asking
-3. **Update WORKFLOW-GUIDE.md** to show collaborative examples
-4. **Update all skills** to require approval before writing
-5. **Add /collaborative-check skill** to audit if sessions are collaborative
-
-Would you like me to implement these updates now?
+- **CLAUDE.md** — Collaboration protocol section added
+- **All 48 agent definitions** — Updated to enforce question-asking and approval
+- **All skills** — Updated to require approval before writing
+- **WORKFLOW-GUIDE.md** — Rewritten with collaborative examples
+- **README.md** — Clarifies collaborative (not autonomous) design
+- **AskUserQuestion tool** — Integrated into 10 skills for structured option UI
