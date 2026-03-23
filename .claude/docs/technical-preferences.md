@@ -3,12 +3,14 @@
 <!-- Populated by /setup-engine. Updated as the user makes decisions throughout development. -->
 <!-- All agents reference this file for project-specific standards and conventions. -->
 
-## Engine & Language
+## Stack
 
-- **Engine**: [TO BE CONFIGURED — run /setup-engine]
-- **Language**: [TO BE CONFIGURED]
-- **Rendering**: [TO BE CONFIGURED]
-- **Physics**: [TO BE CONFIGURED]
+- **Client Renderer**: Phaser 3 (browser-based, canvas/WebGL)
+- **Multiplayer**: Colyseus (authoritative game rooms, WebSocket)
+- **Backend API**: Node.js + Express (REST API)
+- **Database**: PostgreSQL
+- **Language**: TypeScript (client + server)
+- **Platform**: Browser (no native app)
 
 ## Naming Conventions
 
@@ -39,10 +41,16 @@
 
 ## Allowed Libraries / Addons
 
-<!-- Add approved third-party dependencies here -->
-- [None configured yet — add as dependencies are approved]
+- **phaser** — client game renderer
+- **colyseus** — multiplayer room server
+- **colyseus.js** — Colyseus client SDK
+- **express** — HTTP API server
+- **pg** / **postgres** — PostgreSQL client
+- **redis** / **ioredis** — Redis cache (leaderboard, session state, rate limiting)
+- **stripe** — payment processing (gacha pulls, seasonal store)
 
 ## Architecture Decisions Log
 
-<!-- Quick reference linking to full ADRs in docs/architecture/ -->
-- [No ADRs yet — use /architecture-decision to create one]
+- [ADR-001](../../docs/architecture/adr-001-phaser3-renderer.md) — Phaser 3 as client renderer
+- [ADR-002](../../docs/architecture/adr-002-colyseus-multiplayer.md) — Colyseus for multiplayer rooms
+- [ADR-003](../../docs/architecture/adr-003-postgresql-database.md) — PostgreSQL as primary database
