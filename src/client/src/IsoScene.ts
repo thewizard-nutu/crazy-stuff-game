@@ -15,6 +15,9 @@ const TILE_COLOR_B = 0x3d6649; // slightly darker green
 const TILE_OUTLINE = 0x000000;
 const ORIGIN_COLOR = 0xff6b6b; // red — marks tile (0,0)
 
+/** Color assigned to each player slot index. Slot 0 = orange (first joiner). */
+const SLOT_COLORS = [0xff8c00, 0x4488ff, 0x44bb44, 0xee44ee, 0xffdd44];
+
 // ─── Reusable isometric math ──────────────────────────────────────────────────
 
 /**
@@ -30,22 +33,28 @@ export function tileToScreen(tileX: number, tileY: number): { x: number; y: numb
 
 /**
  * Isometric depth sort value.
- * Higher value = rendered in front of lower values.
- *
  * Call `gameObject.setDepth(isoDepth(tileX, tileY))` on every object that
- * participates in Y-sort. This function is the single source of truth —
- * never compute depth inline.
+ * participates in Y-sort. Single source of truth — never compute depth inline.
  */
 export function isoDepth(tileX: number, tileY: number): number {
   return tileX + tileY;
 }
 
-// ─── Sortable object record ───────────────────────────────────────────────────
+// ─── Object records ───────────────────────────────────────────────────────────
 
 interface SortableObject {
   obj: Phaser.GameObjects.GameObject & { setDepth(depth: number): unknown };
   tileX: number;
   tileY: number;
+}
+
+interface AvatarGraphics {
+  body: Phaser.GameObjects.Graphics;
+  hat: Phaser.GameObjects.Graphics;
+  label: Phaser.GameObjects.Text;
+  tileX: number;
+  tileY: number;
+  slotIndex: number;
 }
 
 // ─── Scene ────────────────────────────────────────────────────────────────────
@@ -56,20 +65,22 @@ export class IsoScene extends Phaser.Scene {
   /** Canvas Y of tile (0,0). Set in create(). */
   private originY = 0;
 
-  /** All objects that participate in the Y-sort pass every frame. */
+  /** Static demo blocks that participate in the Y-sort pass. */
   private sortables: SortableObject[] = [];
 
-  /** Player tile position — integers, updated on each move. */
-  private playerTileX = 7;
-  private playerTileY = 7;
-  /** Direction the player is facing, shown as an arrow on the block. */
+  /** Colyseus session ID assigned on room join. */
+  private mySessionId = '';
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private room: any = null;
+
+  /** Facing direction for local player — updated on keypress for arrow drawing. */
   private playerFacing: 'W' | 'A' | 'S' | 'D' = 'S';
-  private playerGfx!: Phaser.GameObjects.Graphics;
-  /** Second sprite layer — hat. Separate Graphics so it depth-sorts above the body. */
-  private hatGfx!: Phaser.GameObjects.Graphics;
-  /** Whether the hat is currently equipped. Toggled with H. */
   private hatEquipped = true;
-  private playerCoordLabel!: Phaser.GameObjects.Text;
+
+  /** All networked player avatars, keyed by slot index (stable across occupant changes). */
+  private avatars = new Map<number, AvatarGraphics>();
+  /** Slot index of the local player. Set when onAdd fires for our sessionId. */
+  private mySlotIndex = -1;
 
   constructor() {
     super({ key: 'IsoScene' });
@@ -78,9 +89,6 @@ export class IsoScene extends Phaser.Scene {
   create(): void {
     const { width, height } = this.scale;
 
-    // Grid screen extents:
-    //   X spans: -(GRID_COLS-1)*TILE_W/2  …  +(GRID_ROWS-1)*TILE_W/2
-    //   Y spans: 0  …  (GRID_COLS-1 + GRID_ROWS-1)*TILE_H/2 + TILE_H
     const gridH = (GRID_COLS - 1 + GRID_ROWS - 1) * (TILE_H / 2) + TILE_H;
     this.originX = width / 2;
     this.originY = (height - gridH) / 2;
@@ -88,27 +96,26 @@ export class IsoScene extends Phaser.Scene {
     this.drawTileGrid();
     this.placeOriginMarker();
     this.addDepthSortDemo();
-    this.addPlayer();
     this.setupInput();
     this.addHud();
-    this.connectToLobby().catch(console.error);
+    this.connectToRace().catch(console.error);
   }
 
   /**
    * Y-sort pass — called every frame.
-   * Re-applies isoDepth() to every registered sortable so moving objects always
-   * sort correctly without per-system depth logic.
+   * Re-applies isoDepth() to every registered sortable and all network avatars
+   * so moving objects always sort correctly without per-system depth logic.
    */
   update(): void {
     for (const { obj, tileX, tileY } of this.sortables) {
       obj.setDepth(isoDepth(tileX, tileY));
     }
-    const depth = isoDepth(this.playerTileX, this.playerTileY);
-    this.playerGfx.setDepth(depth);
-    this.hatGfx.setDepth(depth + 0.05);
-    this.playerCoordLabel
-      .setDepth(depth + 0.1)
-      .setText(`(${this.playerTileX},${this.playerTileY})`);
+    for (const av of this.avatars.values()) {
+      const depth = isoDepth(av.tileX, av.tileY);
+      av.body.setDepth(depth);
+      av.hat.setDepth(depth + 0.05);
+      av.label.setDepth(depth + 0.1);
+    }
   }
 
   // ─── Private helpers ───────────────────────────────────────────────────────
@@ -134,7 +141,6 @@ export class IsoScene extends Phaser.Scene {
       }
     }
 
-    // Tiles are always below every game object
     gfx.setDepth(-1);
   }
 
@@ -157,20 +163,11 @@ export class IsoScene extends Phaser.Scene {
 
   /**
    * Place two colored blocks at different tile positions so the depth sort is
-   * visually verifiable.
-   *
-   *   Block A → tile (6,6) → depth 12   (behind player)
-   *   Block B → tile (8,8) → depth 16   (in front of player)
-   *   Player  → tile (7,7) → depth 14   (between A and B)
-   *
-   * All three share the same screen X (tx === ty) and are 16px apart in screen Y,
-   * so they overlap in a chain and the depth sort result is obvious.
+   * visually verifiable without needing networked players.
    */
   private addDepthSortDemo(): void {
     const blockA = this.makeBlock(6, 6, 0x4488ff, 'A');
     const blockB = this.makeBlock(8, 8, 0xffdd44, 'B');
-
-    // Register for the per-frame sort pass
     this.sortables.push(blockA, blockB);
   }
 
@@ -185,11 +182,10 @@ export class IsoScene extends Phaser.Scene {
     const sx = this.originX + x;
     const sy = this.originY + y;
 
-    // Block: 20 × 24px, bottom edge sits at the tile's bottom vertex
     const blockW = 20;
     const blockH = 24;
     const bx = sx;
-    const by = sy + TILE_H; // bottom of the block = bottom vertex of the tile
+    const by = sy + TILE_H;
 
     const gfx = this.add.graphics();
     gfx.fillStyle(color, 1);
@@ -204,26 +200,86 @@ export class IsoScene extends Phaser.Scene {
     return { obj: gfx, tileX, tileY };
   }
 
-  /** Create player graphics and label, then draw at starting tile. */
-  private addPlayer(): void {
-    this.playerGfx = this.add.graphics();
-    this.hatGfx = this.add.graphics();
-    this.playerCoordLabel = this.add
-      .text(0, 0, '', { fontSize: '10px', color: '#ffffff' })
-      .setOrigin(0.5, 1);
-    this.redrawPlayer();
+  /**
+   * Wire WASD keys to send move messages to the server.
+   * Server is authoritative — no local position update, we wait for state broadcast.
+   */
+  private setupInput(): void {
+    const kb = this.input.keyboard!;
+    kb.on('keydown-W', () => { console.log('[input] keydown W'); this.sendMove('W'); });
+    kb.on('keydown-S', () => { console.log('[input] keydown S'); this.sendMove('S'); });
+    kb.on('keydown-A', () => { console.log('[input] keydown A'); this.sendMove('A'); });
+    kb.on('keydown-D', () => { console.log('[input] keydown D'); this.sendMove('D'); });
+    kb.on('keydown-H', () => {
+      this.hatEquipped = !this.hatEquipped;
+      // Immediately redraw local avatar for hat toggle — cosmetic-only, not synced
+      const av = this.avatars.get(this.mySlotIndex);
+      if (av) this.drawAvatarAt(av, av.tileX, av.tileY, true);
+    });
   }
 
   /**
-   * Clear and redraw playerGfx at the current tile position with a direction
-   * arrow, and reposition the coord label. Called after every move.
-   *
-   * Iso directions map to screen-space axes exactly:
-   *   W (-1,-1) → screen up    S (+1,+1) → screen down
-   *   A (-1,+1) → screen left  D (+1,-1) → screen right
+   * Send a move direction to the server. Update facing immediately for
+   * responsive arrow visual, but do not update tile position locally.
    */
-  private redrawPlayer(): void {
-    const { x, y } = tileToScreen(this.playerTileX, this.playerTileY);
+  private sendMove(direction: 'W' | 'A' | 'S' | 'D'): void {
+    console.log('[sendMove]', direction, 'room:', !!this.room);
+    this.playerFacing = direction;
+    if (this.room) {
+      this.room.send('move', direction);
+    }
+  }
+
+  /**
+   * Called by onAdd (initial state) and slot.onChange (any property change).
+   * Creates, updates, or destroys the avatar for this slot based on slot.occupied.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private handleSlotChange(slot: any, index: number): void {
+    if (slot.occupied) {
+      if (!this.avatars.has(index)) {
+        this.avatars.set(index, this.createAvatar(index));
+      }
+      if (slot.sessionId === this.mySessionId) {
+        this.mySlotIndex = index;
+      }
+      const av = this.avatars.get(index)!;
+      av.tileX = slot.tileX as number;
+      av.tileY = slot.tileY as number;
+      this.drawAvatarAt(av, av.tileX, av.tileY, slot.sessionId === this.mySessionId);
+    } else {
+      const av = this.avatars.get(index);
+      if (av) {
+        av.body.destroy();
+        av.hat.destroy();
+        av.label.destroy();
+        this.avatars.delete(index);
+      }
+    }
+  }
+
+  private createAvatar(slotIndex: number): AvatarGraphics {
+    return {
+      body: this.add.graphics(),
+      hat: this.add.graphics(),
+      label: this.add.text(0, 0, '', { fontSize: '10px', color: '#ffffff' }).setOrigin(0.5, 1),
+      tileX: 7,
+      tileY: 7,
+      slotIndex,
+    };
+  }
+
+  /**
+   * Clear and redraw an avatar at the given tile position.
+   * Local player gets a direction arrow and optional hat; remote players are plain.
+   */
+  private drawAvatarAt(
+    av: AvatarGraphics,
+    tileX: number,
+    tileY: number,
+    isLocal: boolean,
+  ): void {
+    const { x, y } = tileToScreen(tileX, tileY);
     const sx = this.originX + x;
     const sy = this.originY + y;
 
@@ -232,82 +288,68 @@ export class IsoScene extends Phaser.Scene {
     const bx = sx;
     const by = sy + TILE_H; // bottom edge at tile's bottom vertex
 
-    this.playerGfx.clear();
+    av.body.clear();
+    const color = SLOT_COLORS[av.slotIndex % SLOT_COLORS.length];
+    av.body.fillStyle(color, 1);
+    av.body.fillRect(bx - blockW / 2, by - blockH, blockW, blockH);
 
-    // Body
-    this.playerGfx.fillStyle(0xff8c00, 1); // orange
-    this.playerGfx.fillRect(bx - blockW / 2, by - blockH, blockW, blockH);
-
-    // Direction arrow — small dark triangle on the block face
-    const cx = bx;
-    const cy = by - blockH / 2; // vertical center of block
-    const ar = 5; // arrow half-size in px
-    this.playerGfx.fillStyle(0x000000, 0.65);
-    switch (this.playerFacing) {
-      case 'W': // up
-        this.playerGfx.fillTriangle(cx, cy - ar, cx - ar, cy + ar, cx + ar, cy + ar);
-        break;
-      case 'S': // down
-        this.playerGfx.fillTriangle(cx, cy + ar, cx - ar, cy - ar, cx + ar, cy - ar);
-        break;
-      case 'A': // left
-        this.playerGfx.fillTriangle(cx - ar, cy, cx + ar, cy - ar, cx + ar, cy + ar);
-        break;
-      case 'D': // right
-        this.playerGfx.fillTriangle(cx + ar, cy, cx - ar, cy - ar, cx - ar, cy + ar);
-        break;
+    // Direction arrow on local player only
+    if (isLocal) {
+      const cx = bx;
+      const cy = by - blockH / 2;
+      const ar = 5;
+      av.body.fillStyle(0x000000, 0.65);
+      switch (this.playerFacing) {
+        case 'W':
+          av.body.fillTriangle(cx, cy - ar, cx - ar, cy + ar, cx + ar, cy + ar);
+          break;
+        case 'S':
+          av.body.fillTriangle(cx, cy + ar, cx - ar, cy - ar, cx + ar, cy - ar);
+          break;
+        case 'A':
+          av.body.fillTriangle(cx - ar, cy, cx + ar, cy - ar, cx + ar, cy + ar);
+          break;
+        case 'D':
+          av.body.fillTriangle(cx + ar, cy, cx - ar, cy - ar, cx - ar, cy + ar);
+          break;
+      }
     }
 
-    this.playerCoordLabel.setPosition(bx, by - blockH - 2);
+    av.label.setPosition(bx, by - blockH - 2).setText(`(${tileX},${tileY})`);
 
-    // Hat layer — drawn on separate Graphics so depth can be set between body and label
-    this.hatGfx.clear();
-    if (this.hatEquipped) {
+    // Hat layer — local player only, toggleable with H key (not synced to server)
+    av.hat.clear();
+    if (isLocal && this.hatEquipped) {
       const hatW = 18;
       const crownH = 6;
       const brimH = 3;
       const hatTop = by - blockH - crownH - brimH;
-      this.hatGfx.fillStyle(0x9b59b6, 1); // purple
-      // Crown
-      this.hatGfx.fillRect(bx - hatW / 2 + 2, hatTop, hatW - 4, crownH);
-      // Brim (wider, at the base of the crown)
-      this.hatGfx.fillRect(bx - hatW / 2, hatTop + crownH, hatW, brimH);
+      av.hat.fillStyle(0x9b59b6, 1); // purple
+      av.hat.fillRect(bx - hatW / 2 + 2, hatTop, hatW - 4, crownH);
+      av.hat.fillRect(bx - hatW / 2, hatTop + crownH, hatW, brimH);
     }
   }
 
-  /**
-   * Wire WASD keys to one-tile isometric movement.
-   * One keypress = one tile. Bounds-clamped to 0–(GRID_SIZE-1).
-   */
-  private setupInput(): void {
-    const kb = this.input.keyboard!;
-    kb.on('keydown-W', () => this.tryMove(-1, -1, 'W'));
-    kb.on('keydown-S', () => this.tryMove(1, 1, 'S'));
-    kb.on('keydown-A', () => this.tryMove(-1, 1, 'A'));
-    kb.on('keydown-D', () => this.tryMove(1, -1, 'D'));
-    kb.on('keydown-H', () => { this.hatEquipped = !this.hatEquipped; this.redrawPlayer(); });
-  }
-
-  /** Attempt to move by (dtx, dty). Clamps to grid; always updates facing. */
-  private tryMove(dtx: number, dty: number, facing: 'W' | 'A' | 'S' | 'D'): void {
-    this.playerFacing = facing;
-    this.playerTileX = Phaser.Math.Clamp(this.playerTileX + dtx, 0, GRID_COLS - 1);
-    this.playerTileY = Phaser.Math.Clamp(this.playerTileY + dty, 0, GRID_ROWS - 1);
-    this.redrawPlayer();
-  }
-
-  /** Connect to Colyseus LobbyRoom on startup. */
-  private async connectToLobby(): Promise<void> {
+  /** Connect to Colyseus RaceRoom and receive state via plain JSON messages. */
+  private async connectToRace(): Promise<void> {
     const { Client } = await import('colyseus.js');
     const client = new Client('ws://localhost:3000');
-    await client.joinOrCreate('lobby');
-    console.log('[S1-06] connected to lobby');
+    const room = await client.joinOrCreate('race', { playerName: 'Player' });
+    this.room = room;
+    this.mySessionId = room.sessionId;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    room.onMessage('state', (data: { slots: any[] }) => {
+      data.slots.forEach((slot, index) => this.handleSlotChange(slot, index));
+    });
+
+    console.log('[IsoScene] connected to RaceRoom:', this.mySessionId);
   }
 
-  /** Fixed HUD line — confirms milestone and tile spec at a glance. */
+  /** Fixed HUD — confirms milestone at a glance. */
   private addHud(): void {
     this.add
-      .text(8, 8, 'S1-06 ✓  WASD to move · H=hat · depth-sorted · Colyseus connected', {
+      .text(8, 8, 'S1-07 ✓  WASD to move · H=hat · depth-sorted · RaceRoom (server-auth)', {
         fontSize: '13px',
         color: '#aabbcc',
         backgroundColor: '#00000055',
@@ -318,10 +360,7 @@ export class IsoScene extends Phaser.Scene {
   }
 
   /** Four corners of an isometric diamond tile in screen space. */
-  private rhombusPoints(
-    sx: number,
-    sy: number,
-  ): Array<{ x: number; y: number }> {
+  private rhombusPoints(sx: number, sy: number): Array<{ x: number; y: number }> {
     return [
       { x: sx, y: sy },                           // top
       { x: sx + TILE_W / 2, y: sy + TILE_H / 2 }, // right
