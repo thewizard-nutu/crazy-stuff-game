@@ -1,4 +1,8 @@
 import Phaser from 'phaser';
+import { Terrain, TERRAIN_MAP, GRID_COLS, GRID_ROWS } from '../../shared/terrain';
+
+// Re-export for any downstream client code that imported from here
+export { Terrain, TERRAIN_MAP };
 
 // ─── Tile constants (GDD spec: design/gdd/crazy-stuff-gdd.md) ─────────────────
 
@@ -7,26 +11,10 @@ export const TILE_W = 32;
 /** Tile height in pixels (isometric diamond height). */
 export const TILE_H = 16;
 
-const GRID_COLS = 15;
-const GRID_ROWS = 15;
-
 const TILE_OUTLINE = 0x000000;
 const ORIGIN_COLOR = 0xff6b6b; // red — marks tile (0,0)
 
-// ─── Terrain system (visual only — game logic wired in a later sprint) ─────────
-
-/**
- * Terrain type identifiers. Values are stable — the server will import this
- * module when terrain effects are implemented.
- */
-export const Terrain = {
-  Normal:  0,
-  Slow:    1,
-  Slide:   2,
-  Crumble: 3,
-  Boost:   4,
-  Hole:    5,
-} as const;
+// ─── Terrain rendering colours ────────────────────────────────────────────────
 
 /**
  * Primary and secondary fill colours [A, B] for the checkerboard shading.
@@ -39,30 +27,6 @@ const TERRAIN_COLORS: [number, number][] = [
   [0xc4824a, 0xb0723c], // Crumble — sandy orange
   [0xd4b800, 0xc0a600], // Boost   — gold
   [0x111820, 0x0c1018], // Hole    — near-black void
-];
-
-/**
- * Hardcoded race track. Indexed [tileY][tileX].
- * Race flows top-to-bottom: tileX+tileY increases toward the finish.
- *
- *  0 Normal · 1 Slow · 2 Slide · 3 Crumble · 4 Boost · 5 Hole
- */
-export const TERRAIN_MAP: number[][] = [
-  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0], // row  0 ── START
-  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0], // row  1
-  [0,0,1,1,0,0,0,0,0,0,1,1,0,0,0], // row  2 ── slow mud flanks centre lane
-  [0,0,1,1,1,0,0,0,0,1,1,1,0,0,0], // row  3
-  [0,0,0,0,0,4,4,4,4,0,0,0,0,0,0], // row  4 ── first boost corridor
-  [0,0,0,0,4,4,0,0,4,4,0,0,0,0,0], // row  5
-  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0], // row  6 ── breather
-  [0,0,0,2,2,2,2,2,2,2,2,0,0,0,0], // row  7 ── ice / slide zone begins
-  [0,0,2,2,2,2,2,2,2,2,2,2,0,0,0], // row  8
-  [0,0,2,2,4,2,2,2,2,4,2,2,0,0,0], // row  9 ── boost pads hidden inside ice
-  [0,0,0,3,3,3,5,5,3,3,3,0,0,0,0], // row 10 ── crumble bridge with hole pits
-  [0,0,3,3,3,3,5,5,3,3,3,3,0,0,0], // row 11
-  [0,0,0,3,0,3,0,3,0,3,0,0,0,0,0], // row 12 ── crumble / normal gaps — pick your path
-  [0,0,0,0,4,4,4,4,4,4,0,0,0,0,0], // row 13 ── final boost dash
-  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0], // row 14 ── FINISH
 ];
 
 /** Color assigned to each player slot index. Slot 0 = orange (first joiner). */
@@ -132,6 +96,11 @@ export class IsoScene extends Phaser.Scene {
   /** Slot index of the local player. Set when onAdd fires for our sessionId. */
   private mySlotIndex = -1;
 
+  /** Mutable terrain grid — updated by server terrainChange messages (crumble→hole). */
+  private localTerrain: number[][] = TERRAIN_MAP.map(row => [...row]);
+  /** Graphics object used for tile rendering — stored so individual tiles can be redrawn. */
+  private tileGfx!: Phaser.GameObjects.Graphics;
+
   constructor() {
     super({ key: 'IsoScene' });
   }
@@ -172,28 +141,37 @@ export class IsoScene extends Phaser.Scene {
 
   /** Draw the full GRID_COLS × GRID_ROWS tile floor using Phaser Graphics. */
   private drawTileGrid(): void {
-    const gfx = this.add.graphics();
+    this.tileGfx = this.add.graphics();
+    this.renderAllTiles();
+    this.tileGfx.setDepth(-1);
+  }
 
+  /** Render all tiles from localTerrain into tileGfx. */
+  private renderAllTiles(): void {
+    this.tileGfx.clear();
     for (let ty = 0; ty < GRID_ROWS; ty++) {
       for (let tx = 0; tx < GRID_COLS; tx++) {
-        const terrain = TERRAIN_MAP[ty][tx] ?? Terrain.Normal;
-        const [colorA, colorB] = TERRAIN_COLORS[terrain];
-        const fill = (tx + ty) % 2 === 0 ? colorA : colorB;
-
-        const { x, y } = tileToScreen(tx, ty);
-        const sx = this.originX + x;
-        const sy = this.originY + y;
-        const pts = this.rhombusPoints(sx, sy);
-
-        gfx.fillStyle(fill, 1);
-        gfx.fillPoints(pts, true);
-
-        gfx.lineStyle(1, TILE_OUTLINE, 0.12);
-        gfx.strokePoints(pts, true);
+        this.renderTile(tx, ty);
       }
     }
+  }
 
-    gfx.setDepth(-1);
+  /** Render a single tile into the shared tileGfx graphics object. */
+  private renderTile(tx: number, ty: number): void {
+    const terrain = this.localTerrain[ty]?.[tx] ?? Terrain.Normal;
+    const [colorA, colorB] = TERRAIN_COLORS[terrain];
+    const fill = (tx + ty) % 2 === 0 ? colorA : colorB;
+
+    const { x, y } = tileToScreen(tx, ty);
+    const sx = this.originX + x;
+    const sy = this.originY + y;
+    const pts = this.rhombusPoints(sx, sy);
+
+    this.tileGfx.fillStyle(fill, 1);
+    this.tileGfx.fillPoints(pts, true);
+
+    this.tileGfx.lineStyle(1, TILE_OUTLINE, 0.12);
+    this.tileGfx.strokePoints(pts, true);
   }
 
   /** Highlight tile (0,0) in red so the grid origin is immediately identifiable. */
@@ -393,6 +371,12 @@ export class IsoScene extends Phaser.Scene {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     room.onMessage('state', (data: { slots: any[] }) => {
       data.slots.forEach((slot, index) => this.handleSlotChange(slot, index));
+    });
+
+    room.onMessage('terrainChange', (data: { tileX: number; tileY: number; terrain: number }) => {
+      this.localTerrain[data.tileY][data.tileX] = data.terrain;
+      // Redraw entire grid (single Graphics object — can't patch one tile)
+      this.renderAllTiles();
     });
 
     console.log('[IsoScene] connected to RaceRoom:', this.mySessionId);
