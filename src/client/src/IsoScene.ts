@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { Terrain, TERRAIN_MAP, GRID_COLS, GRID_ROWS } from '../../shared/terrain';
+import { Terrain, TERRAIN_MAP, GRID_COLS, GRID_ROWS, RacePhase } from '../../shared/terrain';
 
 // Re-export for any downstream client code that imported from here
 export { Terrain, TERRAIN_MAP };
@@ -66,9 +66,13 @@ interface AvatarGraphics {
   body: Phaser.GameObjects.Graphics;
   hat: Phaser.GameObjects.Graphics;
   label: Phaser.GameObjects.Text;
+  statusLabel: Phaser.GameObjects.Text;
   tileX: number;
   tileY: number;
   slotIndex: number;
+  frozen: boolean;
+  penalized: boolean;
+  boosted: boolean;
 }
 
 // ─── Scene ────────────────────────────────────────────────────────────────────
@@ -101,6 +105,11 @@ export class IsoScene extends Phaser.Scene {
   /** Graphics object used for tile rendering — stored so individual tiles can be redrawn. */
   private tileGfx!: Phaser.GameObjects.Graphics;
 
+  // ─── Race phase HUD ─────────────────────────────────────────────────────
+  private currentPhase: number = RacePhase.Waiting;
+  private phaseText!: Phaser.GameObjects.Text;
+  private winnerText!: Phaser.GameObjects.Text;
+
   constructor() {
     super({ key: 'IsoScene' });
   }
@@ -125,7 +134,7 @@ export class IsoScene extends Phaser.Scene {
    * Re-applies isoDepth() to every registered sortable and all network avatars
    * so moving objects always sort correctly without per-system depth logic.
    */
-  update(): void {
+  update(_time: number, _delta: number): void {
     for (const { obj, tileX, tileY } of this.sortables) {
       obj.setDepth(isoDepth(tileX, tileY));
     }
@@ -134,6 +143,16 @@ export class IsoScene extends Phaser.Scene {
       av.body.setDepth(depth);
       av.hat.setDepth(depth + 0.05);
       av.label.setDepth(depth + 0.1);
+      av.statusLabel.setDepth(depth + 0.15);
+    }
+
+    // Frozen flash: toggle local player avatar visibility every 500ms
+    const localAv = this.avatars.get(this.mySlotIndex);
+    if (localAv?.frozen) {
+      const flash = Math.floor(_time / 500) % 2 === 0;
+      localAv.body.setVisible(flash);
+    } else if (localAv) {
+      localAv.body.setVisible(true);
     }
   }
 
@@ -251,8 +270,10 @@ export class IsoScene extends Phaser.Scene {
   /**
    * Send a move direction to the server. Update facing immediately for
    * responsive arrow visual, but do not update tile position locally.
+   * Blocked when phase is not Racing.
    */
   private sendMove(direction: 'W' | 'A' | 'S' | 'D'): void {
+    if (this.currentPhase !== RacePhase.Racing) return;
     console.log('[sendMove]', direction, 'room:', !!this.room);
     this.playerFacing = direction;
     if (this.room) {
@@ -276,13 +297,18 @@ export class IsoScene extends Phaser.Scene {
       const av = this.avatars.get(index)!;
       av.tileX = slot.tileX as number;
       av.tileY = slot.tileY as number;
-      this.drawAvatarAt(av, av.tileX, av.tileY, slot.sessionId === this.mySessionId);
+      av.frozen = slot.frozen ?? false;
+      av.penalized = slot.penalized ?? false;
+      av.boosted = slot.boosted ?? false;
+      const isLocal = slot.sessionId === this.mySessionId;
+      this.drawAvatarAt(av, av.tileX, av.tileY, isLocal);
     } else {
       const av = this.avatars.get(index);
       if (av) {
         av.body.destroy();
         av.hat.destroy();
         av.label.destroy();
+        av.statusLabel.destroy();
         this.avatars.delete(index);
       }
     }
@@ -293,15 +319,25 @@ export class IsoScene extends Phaser.Scene {
       body: this.add.graphics(),
       hat: this.add.graphics(),
       label: this.add.text(0, 0, '', { fontSize: '10px', color: '#ffffff' }).setOrigin(0.5, 1),
+      statusLabel: this.add.text(0, 0, '', {
+        fontSize: '8px',
+        color: '#ffffff',
+        fontStyle: 'bold',
+        backgroundColor: '#00000088',
+        padding: { x: 2, y: 1 },
+      }).setOrigin(0.5, 1),
       tileX: 7,
       tileY: 7,
       slotIndex,
+      frozen: false,
+      penalized: false,
+      boosted: false,
     };
   }
 
   /**
    * Clear and redraw an avatar at the given tile position.
-   * Local player gets a direction arrow and optional hat; remote players are plain.
+   * Local player gets a direction arrow, optional hat, and effect tinting.
    */
   private drawAvatarAt(
     av: AvatarGraphics,
@@ -319,7 +355,19 @@ export class IsoScene extends Phaser.Scene {
     const by = sy + TILE_H; // bottom edge at tile's bottom vertex
 
     av.body.clear();
-    const color = SLOT_COLORS[av.slotIndex % SLOT_COLORS.length];
+
+    // Determine avatar fill color — apply effect tint for local player
+    let color = SLOT_COLORS[av.slotIndex % SLOT_COLORS.length];
+    if (isLocal) {
+      if (av.frozen) {
+        color = 0xff2222;       // red — frozen in hole
+      } else if (av.boosted) {
+        color = 0xffd700;       // gold — boost active
+      } else if (av.penalized) {
+        color = 0x88ccff;       // light blue — post-hole penalty
+      }
+    }
+
     av.body.fillStyle(color, 1);
     av.body.fillRect(bx - blockW / 2, by - blockH, blockW, blockH);
 
@@ -347,6 +395,29 @@ export class IsoScene extends Phaser.Scene {
 
     av.label.setPosition(bx, by - blockH - 2).setText(`(${tileX},${tileY})`);
 
+    // Status indicator above coord label — local player only
+    if (isLocal) {
+      let statusText = '';
+      let statusColor = '#ffffff';
+      if (av.frozen) {
+        statusText = 'FROZEN';
+        statusColor = '#ff4444';
+      } else if (av.boosted) {
+        statusText = 'BOOSTED';
+        statusColor = '#ffd700';
+      } else if (av.penalized) {
+        statusText = 'SLOW';
+        statusColor = '#88ccff';
+      }
+      av.statusLabel
+        .setPosition(bx, by - blockH - 14)
+        .setText(statusText)
+        .setColor(statusColor)
+        .setVisible(statusText !== '');
+    } else {
+      av.statusLabel.setVisible(false);
+    }
+
     // Hat layer — local player only, toggleable with H key (not synced to server)
     av.hat.clear();
     if (isLocal && this.hatEquipped) {
@@ -369,7 +440,9 @@ export class IsoScene extends Phaser.Scene {
     this.mySessionId = room.sessionId;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    room.onMessage('state', (data: { slots: any[] }) => {
+    room.onMessage('state', (data: { phase: number; countdown: number; slots: any[] }) => {
+      this.currentPhase = data.phase;
+      this.updatePhaseHud(data.phase, data.countdown);
       data.slots.forEach((slot, index) => this.handleSlotChange(slot, index));
     });
 
@@ -379,20 +452,82 @@ export class IsoScene extends Phaser.Scene {
       this.renderAllTiles();
     });
 
+    room.onMessage('raceFinished', (data: { playerName: string; timeSeconds: number }) => {
+      this.showWinner(data.playerName, data.timeSeconds);
+    });
+
     console.log('[IsoScene] connected to RaceRoom:', this.mySessionId);
   }
 
-  /** Fixed HUD — confirms milestone at a glance. */
+  /** Fixed HUD — terrain legend + race phase display. */
   private addHud(): void {
+    // Terrain legend (top-left)
     this.add
-      .text(8, 8, 'S1-08 ✓  Terrain: green=Normal · brown=Slow · blue=Ice · orange=Crumble · gold=Boost · black=Hole', {
-        fontSize: '13px',
+      .text(8, 8, 'Terrain: green=Normal · brown=Slow · blue=Ice · orange=Crumble · gold=Boost · black=Hole', {
+        fontSize: '11px',
         color: '#aabbcc',
         backgroundColor: '#00000055',
         padding: { x: 6, y: 3 },
       })
       .setScrollFactor(0)
       .setDepth(9999);
+
+    // Phase status (top-center)
+    const { width } = this.scale;
+    this.phaseText = this.add
+      .text(width / 2, 8, 'Waiting for players...', {
+        fontSize: '18px',
+        color: '#ffffff',
+        backgroundColor: '#00000088',
+        padding: { x: 12, y: 6 },
+      })
+      .setOrigin(0.5, 0)
+      .setScrollFactor(0)
+      .setDepth(9999);
+
+    // Winner announcement (centered, hidden initially)
+    const { height } = this.scale;
+    this.winnerText = this.add
+      .text(width / 2, height / 2, '', {
+        fontSize: '28px',
+        color: '#ffdd44',
+        backgroundColor: '#000000cc',
+        padding: { x: 24, y: 16 },
+        align: 'center',
+      })
+      .setOrigin(0.5, 0.5)
+      .setScrollFactor(0)
+      .setDepth(10000)
+      .setVisible(false);
+  }
+
+  /** Update the phase HUD text based on current server phase. */
+  private updatePhaseHud(phase: number, countdown: number): void {
+    switch (phase) {
+      case RacePhase.Waiting:
+        this.phaseText.setText('Waiting for players...');
+        this.phaseText.setColor('#aaaaaa');
+        break;
+      case RacePhase.Countdown:
+        this.phaseText.setText(`Starting in ${countdown}...`);
+        this.phaseText.setColor('#ffdd44');
+        break;
+      case RacePhase.Racing:
+        this.phaseText.setText('Racing!');
+        this.phaseText.setColor('#44ff44');
+        break;
+      case RacePhase.Finished:
+        this.phaseText.setText('Race Over');
+        this.phaseText.setColor('#ff6666');
+        break;
+    }
+  }
+
+  /** Show the big centered winner announcement. */
+  private showWinner(playerName: string, timeSeconds: number): void {
+    this.winnerText
+      .setText(`${playerName} wins!\n${timeSeconds.toFixed(2)}s`)
+      .setVisible(true);
   }
 
   /** Four corners of an isometric diamond tile in screen space. */

@@ -3,6 +3,27 @@
  * Keep this file free of Phaser / Colyseus / Node dependencies.
  */
 
+/** Race phase — shared between server and client state broadcasts. */
+export const RacePhase = {
+  Waiting:   0,
+  Countdown: 1,
+  Racing:    2,
+  Finished:  3,
+} as const;
+
+export type RacePhaseType = (typeof RacePhase)[keyof typeof RacePhase];
+
+/** Finish line bounds: tileY >= FINISH_Y and tileX in [FINISH_X_MIN, FINISH_X_MAX]. */
+export const FINISH_Y = 13;
+export const FINISH_X_MIN = 4;
+export const FINISH_X_MAX = 9;
+
+/** Minimum players required to start a race. */
+export const MIN_PLAYERS_TO_START = 2;
+
+/** Countdown duration in seconds. */
+export const COUNTDOWN_SECONDS = 3;
+
 /** Terrain type identifiers. Values are stable across client and server. */
 export const Terrain = {
   Normal:  0,

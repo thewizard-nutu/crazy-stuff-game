@@ -1,6 +1,10 @@
 import { Room, Client } from 'colyseus';
 import { Schema, ArraySchema, type } from '@colyseus/schema';
-import { Terrain, TERRAIN_MAP, GRID_MAX, SPAWN_X, SPAWN_Y } from '../../../shared/terrain';
+import {
+  Terrain, TERRAIN_MAP, GRID_MAX, SPAWN_X, SPAWN_Y,
+  RacePhase, FINISH_Y, FINISH_X_MIN, FINISH_X_MAX,
+  MIN_PLAYERS_TO_START, COUNTDOWN_SECONDS,
+} from '../../../shared/terrain';
 
 // ─── Schema ──────────────────────────────────────────────────────────────────
 
@@ -72,6 +76,13 @@ export class RaceRoom extends Room<RaceState> {
   /** Tracks crumble timers so we don't double-schedule. Key: "x,y". */
   private crumbleTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
+  // ─── Race phase state ───────────────────────────────────────────────────
+
+  private phase: number = RacePhase.Waiting;
+  private countdown = 0;
+  private countdownTimer: ReturnType<typeof setInterval> | null = null;
+  private startTime = 0;
+
   onCreate(): void {
     this.setState(new RaceState());
     this.resetTerrainGrid();
@@ -106,6 +117,9 @@ export class RaceRoom extends Room<RaceState> {
     const idx = this.state.slots.indexOf(slot);
     console.log(`[RaceRoom] joined: ${client.sessionId} as "${slot.playerName}" in slot ${idx}`);
     this.broadcastState();
+
+    // Check if we should start countdown
+    this.checkStartCondition();
   }
 
   onLeave(client: Client): void {
@@ -129,9 +143,17 @@ export class RaceRoom extends Room<RaceState> {
 
     console.log(`[RaceRoom] left: ${client.sessionId} freed slot ${idx}`);
     this.broadcastState();
+
+    // If we drop below min players during countdown, cancel it
+    if (this.phase === RacePhase.Countdown && this.occupiedCount() < MIN_PLAYERS_TO_START) {
+      this.cancelCountdown();
+    }
   }
 
   onDispose(): void {
+    // Clear countdown timer
+    if (this.countdownTimer) clearInterval(this.countdownTimer);
+
     // Clear all crumble timers
     for (const timer of this.crumbleTimers.values()) clearTimeout(timer);
     this.crumbleTimers.clear();
@@ -145,9 +167,82 @@ export class RaceRoom extends Room<RaceState> {
     console.log('[RaceRoom] disposed');
   }
 
+  // ─── Race phase management ─────────────────────────────────────────────
+
+  private occupiedCount(): number {
+    return this.state.slots.filter(s => s.occupied).length;
+  }
+
+  private checkStartCondition(): void {
+    if (this.phase !== RacePhase.Waiting) return;
+    if (this.occupiedCount() >= MIN_PLAYERS_TO_START) {
+      this.startCountdown();
+    }
+  }
+
+  private startCountdown(): void {
+    this.phase = RacePhase.Countdown;
+    this.countdown = COUNTDOWN_SECONDS;
+    console.log(`[RaceRoom] countdown started: ${this.countdown}`);
+    this.broadcastState();
+
+    this.countdownTimer = setInterval(() => {
+      this.countdown--;
+      console.log(`[RaceRoom] countdown: ${this.countdown}`);
+
+      if (this.countdown <= 0) {
+        if (this.countdownTimer) clearInterval(this.countdownTimer);
+        this.countdownTimer = null;
+        this.beginRace();
+      } else {
+        this.broadcastState();
+      }
+    }, 1000);
+  }
+
+  private cancelCountdown(): void {
+    if (this.countdownTimer) {
+      clearInterval(this.countdownTimer);
+      this.countdownTimer = null;
+    }
+    this.phase = RacePhase.Waiting;
+    this.countdown = 0;
+    console.log('[RaceRoom] countdown cancelled — not enough players');
+    this.broadcastState();
+  }
+
+  private beginRace(): void {
+    this.phase = RacePhase.Racing;
+    this.startTime = Date.now();
+    console.log('[RaceRoom] race started!');
+    this.broadcastState();
+  }
+
+  private checkFinishLine(sessionId: string, slot: PlayerSlot): void {
+    if (this.phase !== RacePhase.Racing) return;
+
+    if (slot.tileY >= FINISH_Y && slot.tileX >= FINISH_X_MIN && slot.tileX <= FINISH_X_MAX) {
+      this.phase = RacePhase.Finished;
+      const elapsedMs = Date.now() - this.startTime;
+      const elapsedSec = (elapsedMs / 1000).toFixed(2);
+
+      console.log(`[RaceRoom] ${slot.playerName} finished in ${elapsedSec}s!`);
+
+      this.broadcast('raceFinished', {
+        playerName: slot.playerName,
+        timeSeconds: parseFloat(elapsedSec),
+      });
+
+      this.broadcastState();
+    }
+  }
+
   // ─── Movement handling ────────────────────────────────────────────────────
 
   private handleMove(sessionId: string, direction: string): void {
+    // Only allow movement during Racing phase
+    if (this.phase !== RacePhase.Racing) return;
+
     const slot = this.state.slots.find(s => s.sessionId === sessionId);
     const ps = this.players.get(sessionId);
     if (!slot || !ps) return;
@@ -182,6 +277,9 @@ export class RaceRoom extends Room<RaceState> {
 
     // Apply terrain effect at new position
     this.applyTerrainEffect(sessionId, slot, ps, direction);
+
+    // Check if player crossed the finish line
+    this.checkFinishLine(sessionId, slot);
 
     this.broadcastState();
   }
@@ -362,13 +460,21 @@ export class RaceRoom extends Room<RaceState> {
 
   private broadcastState(): void {
     this.broadcast('state', {
-      slots: this.state.slots.map(s => ({
-        sessionId: s.sessionId,
-        playerName: s.playerName,
-        tileX: s.tileX,
-        tileY: s.tileY,
-        occupied: s.occupied,
-      })),
+      phase: this.phase,
+      countdown: this.countdown,
+      slots: this.state.slots.map(s => {
+        const ps = this.players.get(s.sessionId);
+        return {
+          sessionId: s.sessionId,
+          playerName: s.playerName,
+          tileX: s.tileX,
+          tileY: s.tileY,
+          occupied: s.occupied,
+          frozen: ps?.frozen ?? false,
+          penalized: ps?.penalized ?? false,
+          boosted: (ps?.boostCharges ?? 0) > 0,
+        };
+      }),
     });
   }
 }
