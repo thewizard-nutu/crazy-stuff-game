@@ -1,9 +1,19 @@
 import { Room, Client } from 'colyseus';
 import { Schema, ArraySchema, type } from '@colyseus/schema';
 import {
-  Terrain, TERRAIN_MAP, GRID_MAX, SPAWN_X, SPAWN_Y,
-  RacePhase, FINISH_Y, FINISH_X_MIN, FINISH_X_MAX,
-  MIN_PLAYERS_TO_START, COUNTDOWN_SECONDS,
+  Terrain, generateTerrainMap, generateButtons, generatePickups,
+  GRID_COL_MAX, GRID_ROW_MAX, SPAWN_X, SPAWN_Y,
+  FOOTPRINT, HOLE_THRESHOLD,
+  RacePhase, FINISH_X, FINISH_Y_MIN, FINISH_Y_MAX,
+  MIN_PLAYERS_TO_START, COUNTDOWN_SECONDS, FINISH_COUNTDOWN_SECONDS, RESET_DELAY_MS,
+  ButtonType, BUTTON_COOLDOWN_MS,
+  PickupType, PICKUP_SPEED_COOLDOWN, PICKUP_SPEED_DURATION,
+  SLIME_SIZE, SLIME_PERSIST_MS, SLIME_STUCK_MS,
+  KNOCKBACK_RADIUS, KNOCKBACK_DISTANCE, KNOCKBACK_SLOW_MS, KNOCKBACK_SLOW_CD,
+  POSITION_POINTS, DNF_POINTS,
+  BONUS_BUTTON_ACTIVATED, BONUS_FAST_FINISH, BONUS_GOOD_FINISH,
+  FAST_FINISH_THRESHOLD, GOOD_FINISH_THRESHOLD,
+  type ButtonDef, type PickupDef, type RaceResult,
 } from '../../../shared/terrain';
 
 // ─── Schema ──────────────────────────────────────────────────────────────────
@@ -23,40 +33,81 @@ class RaceState extends Schema {
   );
 }
 
-// ─── Movement constants ──────────────────────────────────────────────────────
+// ─── Movement ────────────────────────────────────────────────────────────────
 
-/** Isometric diagonal movement — matches client WASD mapping. */
 const MOVE_DELTAS: Record<string, [number, number]> = {
   W: [-1, -1], S: [1, 1], A: [-1, 1], D: [1, -1],
 };
+const MOVE_MAX_X = GRID_COL_MAX - (FOOTPRINT - 1);
+const MOVE_MAX_Y = GRID_ROW_MAX - (FOOTPRINT - 1);
 
-// ─── Timing constants (ms) ───────────────────────────────────────────────────
+// ─── Timing (ms) ─────────────────────────────────────────────────────────────
 
-const DEFAULT_COOLDOWN = 150;     // base movement cooldown (instant feel, anti-spam)
-const SLOW_COOLDOWN    = 500;     // Slow terrain next-move cooldown
-const HOLE_RESPAWN_MS  = 3000;    // time frozen in hole before respawn
-const HOLE_PENALTY_MS  = 3000;    // speed penalty duration after hole respawn
-const HOLE_PENALTY_CD  = 650;     // cooldown during hole penalty (25% slower than slow)
-const CRUMBLE_DELAY_MS = 1500;    // time before crumble tile becomes a hole
-const SLIDE_EXTRA_TILES = 2;      // extra tiles of automatic movement on slide
+const DEFAULT_COOLDOWN = 150;
+const SLOW_COOLDOWN    = 500;
+const HOLE_RESPAWN_MS  = 3000;
+const HOLE_PENALTY_MS  = 3000;
+const HOLE_PENALTY_CD  = 650;
+const CRUMBLE_DELAY_MS = 1500;
+const SLIDE_EXTRA_TILES = 4;
 
-// ─── Per-player state (not synced to schema — server-only bookkeeping) ───────
+// ─── Per-player state ────────────────────────────────────────────────────────
 
 interface PlayerState {
-  /** Timestamp of last accepted move. */
   lastMoveTime: number;
-  /** Cooldown (ms) that must elapse before next move is accepted. */
   currentCooldown: number;
-  /** If true, next move is instant AND the move after that is also instant. */
   boostCharges: number;
-  /** If true, player is frozen (hole respawn in progress). */
   frozen: boolean;
-  /** Timeout handle for hole respawn. */
   holeTimer: ReturnType<typeof setTimeout> | null;
-  /** Timeout handle for hole speed penalty expiry. */
   penaltyTimer: ReturnType<typeof setTimeout> | null;
-  /** Whether the player is currently under hole speed penalty. */
   penalized: boolean;
+  finished: boolean;
+  buttonsActivated: number;
+  // Pickup state
+  heldPickup: number | null;    // PickupType value or null
+  shieldActive: boolean;
+  speedBoostUntil: number;      // timestamp
+  speedBoostTimer: ReturnType<typeof setTimeout> | null;
+  stuckUntil: number;           // timestamp (slime effect)
+  knockbackSlowUntil: number;   // timestamp
+  knockbackSlowTimer: ReturnType<typeof setTimeout> | null;
+}
+
+function newPlayerState(): PlayerState {
+  return {
+    lastMoveTime: 0,
+    currentCooldown: DEFAULT_COOLDOWN,
+    boostCharges: 0,
+    frozen: false,
+    holeTimer: null,
+    penaltyTimer: null,
+    penalized: false,
+    finished: false,
+    buttonsActivated: 0,
+    heldPickup: null,
+    shieldActive: false,
+    speedBoostUntil: 0,
+    speedBoostTimer: null,
+    stuckUntil: 0,
+    knockbackSlowUntil: 0,
+    knockbackSlowTimer: null,
+  };
+}
+
+// ─── Finish record ───────────────────────────────────────────────────────────
+
+interface FinishRecord {
+  sessionId: string;
+  playerName: string;
+  timeSeconds: number;
+}
+
+// ─── Slime zone ──────────────────────────────────────────────────────────────
+
+interface SlimeZone {
+  x: number; y: number;
+  ownerId: string;
+  timer: ReturnType<typeof setTimeout>;
 }
 
 // ─── RaceRoom ────────────────────────────────────────────────────────────────
@@ -64,34 +115,57 @@ interface PlayerState {
 export class RaceRoom extends Room<RaceState> {
   maxClients = 5;
 
-  /** Server-side per-player state, keyed by sessionId. */
   private players = new Map<string, PlayerState>();
-
-  /**
-   * Mutable copy of the terrain map for crumble tracking.
-   * Indexed [tileY][tileX]. Starts as a deep copy of the shared TERRAIN_MAP.
-   */
   private terrainGrid: number[][] = [];
-
-  /** Tracks crumble timers so we don't double-schedule. Key: "x,y". */
   private crumbleTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-  // ─── Race phase state ───────────────────────────────────────────────────
+  // Buttons
+  private buttons: ButtonDef[] = [];
+  private buttonCooldowns = new Map<number, number>();
+  private activeEffects = new Map<number, {
+    original: Map<string, number>;
+    timer: ReturnType<typeof setTimeout>;
+  }>();
 
+  // Pickups
+  private pickups: PickupDef[] = [];
+  /** IDs of pickups that have been collected (gone for this race). */
+  private collectedPickups = new Set<number>();
+  /** Active slime zones on the map. */
+  private slimeZones: SlimeZone[] = [];
+
+  // Race phase
   private phase: number = RacePhase.Waiting;
   private countdown = 0;
   private countdownTimer: ReturnType<typeof setInterval> | null = null;
+  private resetTimer: ReturnType<typeof setTimeout> | null = null;
   private startTime = 0;
+
+  // Finish tracking
+  private finishOrder: FinishRecord[] = [];
+  private finishCountdown = 0;
+  private finishCountdownTimer: ReturnType<typeof setInterval> | null = null;
 
   onCreate(): void {
     this.setState(new RaceState());
-    this.resetTerrainGrid();
+    this.generateMap();
 
     this.onMessage('move', (client, direction: string) => {
       this.handleMove(client.sessionId, direction);
     });
 
-    console.log('[RaceRoom] created');
+    this.onMessage('usePickup', (client) => {
+      this.handleUsePickup(client.sessionId);
+    });
+
+    console.log(`[RaceRoom] created — ${this.buttons.length} buttons, ${this.pickups.length} pickups`);
+  }
+
+  private generateMap(): void {
+    this.terrainGrid = generateTerrainMap();
+    this.buttons = generateButtons(this.terrainGrid);
+    this.pickups = generatePickups(this.terrainGrid);
+    this.collectedPickups.clear();
   }
 
   onJoin(client: Client, options: { playerName?: string }): void {
@@ -104,21 +178,17 @@ export class RaceRoom extends Room<RaceState> {
     slot.tileY = SPAWN_Y;
     slot.occupied = true;
 
-    this.players.set(client.sessionId, {
-      lastMoveTime: 0,
-      currentCooldown: DEFAULT_COOLDOWN,
-      boostCharges: 0,
-      frozen: false,
-      holeTimer: null,
-      penaltyTimer: null,
-      penalized: false,
+    this.players.set(client.sessionId, newPlayerState());
+
+    client.send('mapData', {
+      map: this.terrainGrid,
+      buttons: this.buttons,
+      pickups: this.pickups,
     });
 
     const idx = this.state.slots.indexOf(slot);
     console.log(`[RaceRoom] joined: ${client.sessionId} as "${slot.playerName}" in slot ${idx}`);
     this.broadcastState();
-
-    // Check if we should start countdown
     this.checkStartCondition();
   }
 
@@ -133,37 +203,28 @@ export class RaceRoom extends Room<RaceState> {
     slot.tileY = SPAWN_Y;
     slot.occupied = false;
 
-    // Clean up timers
-    const ps = this.players.get(client.sessionId);
-    if (ps) {
-      if (ps.holeTimer) clearTimeout(ps.holeTimer);
-      if (ps.penaltyTimer) clearTimeout(ps.penaltyTimer);
-    }
+    this.clearPlayerTimers(client.sessionId);
     this.players.delete(client.sessionId);
 
     console.log(`[RaceRoom] left: ${client.sessionId} freed slot ${idx}`);
     this.broadcastState();
 
-    // If we drop below min players during countdown, cancel it
     if (this.phase === RacePhase.Countdown && this.occupiedCount() < MIN_PLAYERS_TO_START) {
       this.cancelCountdown();
+    }
+    if (this.phase === RacePhase.Racing && this.finishCountdown > 0) {
+      this.checkAllFinished();
     }
   }
 
   onDispose(): void {
-    // Clear countdown timer
     if (this.countdownTimer) clearInterval(this.countdownTimer);
-
-    // Clear all crumble timers
+    if (this.finishCountdownTimer) clearInterval(this.finishCountdownTimer);
+    if (this.resetTimer) clearTimeout(this.resetTimer);
     for (const timer of this.crumbleTimers.values()) clearTimeout(timer);
-    this.crumbleTimers.clear();
-
-    // Clear all player timers
-    for (const ps of this.players.values()) {
-      if (ps.holeTimer) clearTimeout(ps.holeTimer);
-      if (ps.penaltyTimer) clearTimeout(ps.penaltyTimer);
-    }
-
+    for (const e of this.activeEffects.values()) clearTimeout(e.timer);
+    for (const sz of this.slimeZones) clearTimeout(sz.timer);
+    for (const [sid] of this.players) this.clearPlayerTimers(sid);
     console.log('[RaceRoom] disposed');
   }
 
@@ -175,293 +236,613 @@ export class RaceRoom extends Room<RaceState> {
 
   private checkStartCondition(): void {
     if (this.phase !== RacePhase.Waiting) return;
-    if (this.occupiedCount() >= MIN_PLAYERS_TO_START) {
-      this.startCountdown();
-    }
+    if (this.occupiedCount() >= MIN_PLAYERS_TO_START) this.startCountdown();
   }
 
   private startCountdown(): void {
     this.phase = RacePhase.Countdown;
     this.countdown = COUNTDOWN_SECONDS;
-    console.log(`[RaceRoom] countdown started: ${this.countdown}`);
     this.broadcastState();
-
     this.countdownTimer = setInterval(() => {
       this.countdown--;
-      console.log(`[RaceRoom] countdown: ${this.countdown}`);
-
       if (this.countdown <= 0) {
         if (this.countdownTimer) clearInterval(this.countdownTimer);
         this.countdownTimer = null;
         this.beginRace();
-      } else {
-        this.broadcastState();
-      }
+      } else { this.broadcastState(); }
     }, 1000);
   }
 
   private cancelCountdown(): void {
-    if (this.countdownTimer) {
-      clearInterval(this.countdownTimer);
-      this.countdownTimer = null;
-    }
+    if (this.countdownTimer) { clearInterval(this.countdownTimer); this.countdownTimer = null; }
     this.phase = RacePhase.Waiting;
     this.countdown = 0;
-    console.log('[RaceRoom] countdown cancelled — not enough players');
     this.broadcastState();
   }
 
   private beginRace(): void {
     this.phase = RacePhase.Racing;
     this.startTime = Date.now();
-    console.log('[RaceRoom] race started!');
+    this.finishOrder = [];
+    this.finishCountdown = 0;
     this.broadcastState();
   }
 
+  // ─── Finish line ──────────────────────────────────────────────────────
+
   private checkFinishLine(sessionId: string, slot: PlayerSlot): void {
     if (this.phase !== RacePhase.Racing) return;
+    const ps = this.players.get(sessionId);
+    if (!ps || ps.finished) return;
 
-    if (slot.tileY >= FINISH_Y && slot.tileX >= FINISH_X_MIN && slot.tileX <= FINISH_X_MAX) {
-      this.phase = RacePhase.Finished;
-      const elapsedMs = Date.now() - this.startTime;
-      const elapsedSec = (elapsedMs / 1000).toFixed(2);
-
-      console.log(`[RaceRoom] ${slot.playerName} finished in ${elapsedSec}s!`);
-
-      this.broadcast('raceFinished', {
-        playerName: slot.playerName,
-        timeSeconds: parseFloat(elapsedSec),
-      });
-
-      this.broadcastState();
+    for (let dy = 0; dy < FOOTPRINT; dy++) {
+      for (let dx = 0; dx < FOOTPRINT; dx++) {
+        if (slot.tileX + dx >= FINISH_X && slot.tileY + dy >= FINISH_Y_MIN && slot.tileY + dy <= FINISH_Y_MAX) {
+          this.playerFinished(sessionId, slot, ps);
+          return;
+        }
+      }
     }
   }
 
-  // ─── Movement handling ────────────────────────────────────────────────────
+  private playerFinished(sessionId: string, slot: PlayerSlot, ps: PlayerState): void {
+    ps.finished = true;
+    const timeSeconds = parseFloat(((Date.now() - this.startTime) / 1000).toFixed(2));
+    this.finishOrder.push({ sessionId, playerName: slot.playerName, timeSeconds });
+    const position = this.finishOrder.length;
+
+    this.broadcast('playerFinished', { playerName: slot.playerName, position, timeSeconds });
+    if (position === 1) this.startFinishCountdown();
+    this.checkAllFinished();
+  }
+
+  private startFinishCountdown(): void {
+    this.finishCountdown = FINISH_COUNTDOWN_SECONDS;
+    this.broadcastState();
+    this.finishCountdownTimer = setInterval(() => {
+      this.finishCountdown--;
+      if (this.finishCountdown <= 0) {
+        if (this.finishCountdownTimer) clearInterval(this.finishCountdownTimer);
+        this.finishCountdownTimer = null;
+        this.endRace();
+      } else { this.broadcastState(); }
+    }, 1000);
+  }
+
+  private checkAllFinished(): void {
+    const occupied = this.state.slots.filter(s => s.occupied);
+    if (occupied.every(s => this.players.get(s.sessionId)?.finished) && this.finishOrder.length > 0) {
+      if (this.finishCountdownTimer) clearInterval(this.finishCountdownTimer);
+      this.finishCountdownTimer = null;
+      this.finishCountdown = 0;
+      this.endRace();
+    }
+  }
+
+  private endRace(): void {
+    if (this.phase === RacePhase.Finished) return;
+    this.phase = RacePhase.Finished;
+
+    const results: RaceResult[] = [];
+    const finishedIds = new Set(this.finishOrder.map(f => f.sessionId));
+
+    for (let i = 0; i < this.finishOrder.length; i++) {
+      const f = this.finishOrder[i];
+      const ps = this.players.get(f.sessionId);
+      const positionPoints = POSITION_POINTS[i] ?? DNF_POINTS;
+      let bonusPoints = 0;
+      if (ps) bonusPoints += ps.buttonsActivated * BONUS_BUTTON_ACTIVATED;
+      if (f.timeSeconds < FAST_FINISH_THRESHOLD) bonusPoints += BONUS_FAST_FINISH;
+      else if (f.timeSeconds < GOOD_FINISH_THRESHOLD) bonusPoints += BONUS_GOOD_FINISH;
+      results.push({
+        sessionId: f.sessionId, playerName: f.playerName,
+        position: i + 1, timeSeconds: f.timeSeconds,
+        positionPoints, bonusPoints, totalScore: positionPoints + bonusPoints,
+      });
+    }
+
+    for (const slot of this.state.slots) {
+      if (!slot.occupied || finishedIds.has(slot.sessionId)) continue;
+      const ps = this.players.get(slot.sessionId);
+      let bonusPoints = 0;
+      if (ps) bonusPoints += ps.buttonsActivated * BONUS_BUTTON_ACTIVATED;
+      results.push({
+        sessionId: slot.sessionId, playerName: slot.playerName,
+        position: 0, timeSeconds: 0,
+        positionPoints: DNF_POINTS, bonusPoints, totalScore: DNF_POINTS + bonusPoints,
+      });
+    }
+
+    this.broadcast('raceResults', { results });
+    this.broadcastState();
+    this.scheduleReset();
+  }
+
+  private scheduleReset(): void {
+    this.resetTimer = setTimeout(() => { this.resetTimer = null; this.resetRace(); }, RESET_DELAY_MS);
+  }
+
+  private resetRace(): void {
+    for (const timer of this.crumbleTimers.values()) clearTimeout(timer);
+    this.crumbleTimers.clear();
+    for (const e of this.activeEffects.values()) clearTimeout(e.timer);
+    this.activeEffects.clear();
+    this.buttonCooldowns.clear();
+    for (const sz of this.slimeZones) clearTimeout(sz.timer);
+    this.slimeZones = [];
+
+    this.generateMap();
+    this.broadcast('terrainReset', {
+      map: this.terrainGrid,
+      buttons: this.buttons,
+      pickups: this.pickups,
+    });
+
+    for (const slot of this.state.slots) {
+      if (!slot.occupied) continue;
+      slot.tileX = SPAWN_X;
+      slot.tileY = SPAWN_Y;
+      this.clearPlayerTimers(slot.sessionId);
+      this.players.set(slot.sessionId, newPlayerState());
+    }
+
+    this.phase = RacePhase.Waiting;
+    this.countdown = 0;
+    this.finishCountdown = 0;
+    this.finishOrder = [];
+    this.startTime = 0;
+    this.broadcastState();
+    this.checkStartCondition();
+  }
+
+  // ─── Movement ──────────────────────────────────────────────────────────
 
   private handleMove(sessionId: string, direction: string): void {
-    // Only allow movement during Racing phase
     if (this.phase !== RacePhase.Racing) return;
 
     const slot = this.state.slots.find(s => s.sessionId === sessionId);
     const ps = this.players.get(sessionId);
-    if (!slot || !ps) return;
+    if (!slot || !ps || ps.finished) return;
 
     const delta = MOVE_DELTAS[direction];
-    if (!delta) return;
+    if (!delta || ps.frozen) return;
 
-    // Frozen players (in a hole) cannot move
-    if (ps.frozen) return;
+    // Stuck from slime?
+    if (ps.stuckUntil > Date.now()) return;
 
-    // Cooldown check
     const now = Date.now();
-    const elapsed = now - ps.lastMoveTime;
+    // Speed boost overrides cooldown
+    const activeCooldown = (ps.speedBoostUntil > now)
+      ? PICKUP_SPEED_COOLDOWN
+      : (ps.knockbackSlowUntil > now)
+        ? KNOCKBACK_SLOW_CD
+        : ps.penalized ? HOLE_PENALTY_CD : ps.currentCooldown;
 
-    // Boost charges grant instant movement (skip cooldown)
     if (ps.boostCharges > 0) {
       ps.boostCharges--;
-    } else if (elapsed < ps.currentCooldown) {
-      return; // still on cooldown
+    } else if (now - ps.lastMoveTime < activeCooldown) {
+      return;
     }
 
-    // Apply movement with bounds clamping
-    const newX = Math.max(0, Math.min(GRID_MAX, slot.tileX + delta[0]));
-    const newY = Math.max(0, Math.min(GRID_MAX, slot.tileY + delta[1]));
-
-    // Don't process if clamped to same position
+    const newX = Math.max(0, Math.min(MOVE_MAX_X, slot.tileX + delta[0]));
+    const newY = Math.max(0, Math.min(MOVE_MAX_Y, slot.tileY + delta[1]));
     if (newX === slot.tileX && newY === slot.tileY) return;
+    if (this.footprintHasWall(newX, newY)) return;
 
     slot.tileX = newX;
     slot.tileY = newY;
     ps.lastMoveTime = now;
 
-    // Apply terrain effect at new position
-    this.applyTerrainEffect(sessionId, slot, ps, direction);
-
-    // Check if player crossed the finish line
+    this.applyFootprintTerrain(sessionId, slot, ps, direction);
+    this.checkPickupCollection(sessionId, slot, ps);
+    this.checkSlimeZones(sessionId, slot, ps);
     this.checkFinishLine(sessionId, slot);
-
     this.broadcastState();
   }
 
-  // ─── Terrain effects ──────────────────────────────────────────────────────
+  // ─── Footprint-based terrain effects ───────────────────────────────────
 
-  private applyTerrainEffect(
-    sessionId: string,
-    slot: PlayerSlot,
-    ps: PlayerState,
-    direction: string,
+  private applyFootprintTerrain(
+    sessionId: string, slot: PlayerSlot, ps: PlayerState, direction: string,
   ): void {
-    const terrain = this.terrainAtMutable(slot.tileX, slot.tileY);
+    let holeCount = 0;
+    let hasSlide = false;
+    let hasSlow = false;
+    let hasButton = false;
+    const crumbleTiles: [number, number][] = [];
 
-    // Reset cooldown to default (may be overridden below)
-    if (ps.penalized) {
-      ps.currentCooldown = HOLE_PENALTY_CD;
-    } else {
-      ps.currentCooldown = DEFAULT_COOLDOWN;
+    for (let dy = 0; dy < FOOTPRINT; dy++) {
+      for (let dx = 0; dx < FOOTPRINT; dx++) {
+        const t = this.terrainAtMut(slot.tileX + dx, slot.tileY + dy);
+        switch (t) {
+          case Terrain.Hole:    holeCount++; break;
+          case Terrain.Slide:   hasSlide = true; break;
+          case Terrain.Slow:    hasSlow = true; break;
+          case Terrain.Crumble: crumbleTiles.push([slot.tileX + dx, slot.tileY + dy]); break;
+          case Terrain.Button:  hasButton = true; break;
+        }
+      }
     }
 
-    switch (terrain) {
-      case Terrain.Normal:
-        // No special effect
-        break;
+    ps.currentCooldown = ps.penalized ? HOLE_PENALTY_CD : DEFAULT_COOLDOWN;
 
-      case Terrain.Slow:
-        // Next move takes 500ms cooldown
-        ps.currentCooldown = SLOW_COOLDOWN;
-        break;
-
-      case Terrain.Boost:
-        // Next move is instant AND the one after that (2 boost charges)
-        ps.boostCharges = 2;
-        ps.currentCooldown = 0;
-        break;
-
-      case Terrain.Hole:
+    // Shield absorbs hole/freeze
+    if (holeCount >= HOLE_THRESHOLD) {
+      if (ps.shieldActive) {
+        ps.shieldActive = false;
+        this.broadcast('shieldUsed', { sessionId });
+      } else {
         this.handleHole(sessionId, slot, ps);
-        break;
-
-      case Terrain.Slide:
-        this.handleSlide(sessionId, slot, ps, direction);
-        break;
-
-      case Terrain.Crumble:
-        this.handleCrumble(slot.tileX, slot.tileY);
-        break;
+        return;
+      }
     }
+
+    if (hasSlide) {
+      this.handleSlide(sessionId, slot, ps, direction);
+      return;
+    }
+    for (const [cx, cy] of crumbleTiles) this.handleCrumble(cx, cy);
+    if (hasSlow) ps.currentCooldown = SLOW_COOLDOWN;
+    if (hasButton) this.tryActivateButton(sessionId, slot.tileX, slot.tileY);
   }
 
-  /** Hole: freeze player, respawn at (7,7) after 3s, 25% speed penalty for 3s more. */
   private handleHole(sessionId: string, slot: PlayerSlot, ps: PlayerState): void {
     ps.frozen = true;
     ps.boostCharges = 0;
-
     ps.holeTimer = setTimeout(() => {
-      // Player may have disconnected during the timer
-      const currentSlot = this.state.slots.find(s => s.sessionId === sessionId);
-      const currentPs = this.players.get(sessionId);
-      if (!currentSlot || !currentPs) return;
-
-      // Respawn at center
-      currentSlot.tileX = SPAWN_X;
-      currentSlot.tileY = SPAWN_Y;
-      currentPs.frozen = false;
-      currentPs.holeTimer = null;
-
-      // Apply speed penalty
-      currentPs.penalized = true;
-      currentPs.currentCooldown = HOLE_PENALTY_CD;
-
-      currentPs.penaltyTimer = setTimeout(() => {
-        const stillPs = this.players.get(sessionId);
-        if (!stillPs) return;
-        stillPs.penalized = false;
-        stillPs.currentCooldown = DEFAULT_COOLDOWN;
-        stillPs.penaltyTimer = null;
+      const s = this.state.slots.find(sl => sl.sessionId === sessionId);
+      const p = this.players.get(sessionId);
+      if (!s || !p) return;
+      s.tileX = SPAWN_X; s.tileY = SPAWN_Y;
+      p.frozen = false; p.holeTimer = null;
+      p.penalized = true; p.currentCooldown = HOLE_PENALTY_CD;
+      p.penaltyTimer = setTimeout(() => {
+        const pp = this.players.get(sessionId);
+        if (!pp) return;
+        pp.penalized = false; pp.currentCooldown = DEFAULT_COOLDOWN; pp.penaltyTimer = null;
       }, HOLE_PENALTY_MS);
-
       this.broadcastState();
     }, HOLE_RESPAWN_MS);
   }
 
-  /** Slide: auto-continue in the same direction for 2 extra tiles. */
   private handleSlide(
-    sessionId: string,
-    slot: PlayerSlot,
-    ps: PlayerState,
-    direction: string,
+    sessionId: string, slot: PlayerSlot, ps: PlayerState, direction: string,
   ): void {
     const delta = MOVE_DELTAS[direction];
     if (!delta) return;
 
     for (let i = 0; i < SLIDE_EXTRA_TILES; i++) {
-      const nextX = Math.max(0, Math.min(GRID_MAX, slot.tileX + delta[0]));
-      const nextY = Math.max(0, Math.min(GRID_MAX, slot.tileY + delta[1]));
+      const nx = Math.max(0, Math.min(MOVE_MAX_X, slot.tileX + delta[0]));
+      const ny = Math.max(0, Math.min(MOVE_MAX_Y, slot.tileY + delta[1]));
+      if (nx === slot.tileX && ny === slot.tileY) break;
+      if (this.footprintHasWall(nx, ny)) break;
+      slot.tileX = nx; slot.tileY = ny;
 
-      // Stop sliding if we hit the edge
-      if (nextX === slot.tileX && nextY === slot.tileY) break;
-
-      slot.tileX = nextX;
-      slot.tileY = nextY;
-
-      // Check terrain at each slide step
-      const slideTerrain = this.terrainAtMutable(nextX, nextY);
-
-      // Hole interrupts sliding
-      if (slideTerrain === Terrain.Hole) {
-        this.handleHole(sessionId, slot, ps);
-        return;
-      }
-
-      // Crumble triggers at each step
-      if (slideTerrain === Terrain.Crumble) {
-        this.handleCrumble(nextX, nextY);
-      }
-
-      // Stop sliding if we leave slide terrain
-      if (slideTerrain !== Terrain.Slide && slideTerrain !== Terrain.Boost) {
-        break;
-      }
-    }
-
-    // Apply terrain effect of final landing tile (non-slide effects)
-    const finalTerrain = this.terrainAtMutable(slot.tileX, slot.tileY);
-    if (finalTerrain === Terrain.Slow) {
-      ps.currentCooldown = SLOW_COOLDOWN;
-    } else if (finalTerrain === Terrain.Boost) {
-      ps.boostCharges = 2;
-      ps.currentCooldown = 0;
-    }
-  }
-
-  /** Crumble: tile becomes a Hole after 1.5s of first being stepped on. */
-  private handleCrumble(tileX: number, tileY: number): void {
-    const key = `${tileX},${tileY}`;
-    if (this.crumbleTimers.has(key)) return; // already crumbling
-
-    this.crumbleTimers.set(key, setTimeout(() => {
-      // Mutate terrain grid — tile is now a hole
-      this.terrainGrid[tileY][tileX] = Terrain.Hole;
-      this.crumbleTimers.delete(key);
-
-      // Check if any player is standing on this tile and apply hole effect
-      for (const slot of this.state.slots) {
-        if (!slot.occupied) continue;
-        if (slot.tileX === tileX && slot.tileY === tileY) {
-          const ps = this.players.get(slot.sessionId);
-          if (ps && !ps.frozen) {
-            this.handleHole(slot.sessionId, slot, ps);
-          }
+      let holes = 0; let slideFound = false;
+      for (let dy = 0; dy < FOOTPRINT; dy++) {
+        for (let dx = 0; dx < FOOTPRINT; dx++) {
+          const t = this.terrainAtMut(nx + dx, ny + dy);
+          if (t === Terrain.Hole) holes++;
+          if (t === Terrain.Slide) slideFound = true;
+          if (t === Terrain.Crumble) this.handleCrumble(nx + dx, ny + dy);
         }
       }
 
-      // Broadcast terrain change to clients
+      if (holes >= HOLE_THRESHOLD) {
+        if (ps.shieldActive) { ps.shieldActive = false; this.broadcast('shieldUsed', { sessionId }); }
+        else { this.handleHole(sessionId, slot, ps); return; }
+      }
+      if (!slideFound) break;
+    }
+
+    let hasSlow = false;
+    for (let dy = 0; dy < FOOTPRINT; dy++) {
+      for (let dx = 0; dx < FOOTPRINT; dx++) {
+        if (this.terrainAtMut(slot.tileX + dx, slot.tileY + dy) === Terrain.Slow) hasSlow = true;
+      }
+    }
+    if (hasSlow) ps.currentCooldown = SLOW_COOLDOWN;
+  }
+
+  private handleCrumble(tileX: number, tileY: number): void {
+    const key = `${tileX},${tileY}`;
+    if (this.crumbleTimers.has(key)) return;
+    this.broadcast('crumbleWarning', { tileX, tileY });
+    this.crumbleTimers.set(key, setTimeout(() => {
+      this.terrainGrid[tileY][tileX] = Terrain.Hole;
+      this.crumbleTimers.delete(key);
+      for (const slot of this.state.slots) {
+        if (!slot.occupied) continue;
+        let holes = 0;
+        for (let dy = 0; dy < FOOTPRINT; dy++) {
+          for (let dx = 0; dx < FOOTPRINT; dx++) {
+            if (this.terrainAtMut(slot.tileX + dx, slot.tileY + dy) === Terrain.Hole) holes++;
+          }
+        }
+        if (holes >= HOLE_THRESHOLD) {
+          const ps = this.players.get(slot.sessionId);
+          if (ps && !ps.frozen) {
+            if (ps.shieldActive) { ps.shieldActive = false; this.broadcast('shieldUsed', { sessionId: slot.sessionId }); }
+            else this.handleHole(slot.sessionId, slot, ps);
+          }
+        }
+      }
       this.broadcast('terrainChange', { tileX, tileY, terrain: Terrain.Hole });
       this.broadcastState();
     }, CRUMBLE_DELAY_MS));
   }
 
-  // ─── Terrain grid helpers ─────────────────────────────────────────────────
+  // ─── Pickup collection & activation ────────────────────────────────────
 
-  /** Deep-copy the shared TERRAIN_MAP into mutable server state. */
-  private resetTerrainGrid(): void {
-    this.terrainGrid = TERRAIN_MAP.map(row => [...row]);
+  private checkPickupCollection(sessionId: string, slot: PlayerSlot, ps: PlayerState): void {
+    if (ps.heldPickup !== null) return; // already holding one
+
+    for (const pickup of this.pickups) {
+      if (this.collectedPickups.has(pickup.id)) continue;
+
+      // Check 2×2 footprint overlap with pickup tile
+      const overlapX = slot.tileX <= pickup.x && slot.tileX + FOOTPRINT > pickup.x;
+      const overlapY = slot.tileY <= pickup.y && slot.tileY + FOOTPRINT > pickup.y;
+      if (!overlapX || !overlapY) continue;
+
+      // Collect it
+      ps.heldPickup = pickup.type;
+      this.collectedPickups.add(pickup.id);
+      this.broadcast('pickupCollected', { id: pickup.id, sessionId });
+      return;
+    }
   }
 
-  /** Look up terrain from the mutable server grid (reflects crumble→hole changes). */
-  private terrainAtMutable(tileX: number, tileY: number): number {
-    if (tileX < 0 || tileX > GRID_MAX || tileY < 0 || tileY > GRID_MAX) {
-      return Terrain.Normal;
+  private handleUsePickup(sessionId: string): void {
+    if (this.phase !== RacePhase.Racing) return;
+    const slot = this.state.slots.find(s => s.sessionId === sessionId);
+    const ps = this.players.get(sessionId);
+    if (!slot || !ps || ps.finished || ps.frozen) return;
+    if (ps.heldPickup === null) return;
+
+    const type = ps.heldPickup;
+    ps.heldPickup = null;
+
+    switch (type) {
+      case PickupType.SpeedBoost:
+        this.activateSpeedBoost(sessionId, ps);
+        break;
+      case PickupType.Shield:
+        ps.shieldActive = true;
+        break;
+      case PickupType.SlimeBomb:
+        this.activateSlimeBomb(sessionId, slot);
+        break;
+      case PickupType.Knockback:
+        this.activateKnockback(sessionId, slot);
+        break;
     }
+
+    this.broadcast('pickupUsed', { sessionId, type });
+    this.broadcastState();
+  }
+
+  private activateSpeedBoost(sessionId: string, ps: PlayerState): void {
+    ps.speedBoostUntil = Date.now() + PICKUP_SPEED_DURATION;
+    if (ps.speedBoostTimer) clearTimeout(ps.speedBoostTimer);
+    ps.speedBoostTimer = setTimeout(() => {
+      const p = this.players.get(sessionId);
+      if (p) { p.speedBoostUntil = 0; p.speedBoostTimer = null; }
+      this.broadcastState();
+    }, PICKUP_SPEED_DURATION);
+  }
+
+  private activateSlimeBomb(sessionId: string, slot: PlayerSlot): void {
+    const sx = slot.tileX;
+    const sy = slot.tileY;
+
+    // Place slime zone centered on player
+    const zone: SlimeZone = {
+      x: sx, y: sy,
+      ownerId: sessionId,
+      timer: setTimeout(() => {
+        this.slimeZones = this.slimeZones.filter(z => z !== zone);
+        this.broadcast('slimeExpired', { x: sx, y: sy });
+      }, SLIME_PERSIST_MS),
+    };
+    this.slimeZones.push(zone);
+    this.broadcast('slimePlaced', { x: sx, y: sy, size: SLIME_SIZE, ownerId: sessionId });
+  }
+
+  private activateKnockback(sessionId: string, slot: PlayerSlot): void {
+    const cx = slot.tileX + 0.5;
+    const cy = slot.tileY + 0.5;
+
+    for (const otherSlot of this.state.slots) {
+      if (!otherSlot.occupied || otherSlot.sessionId === sessionId) continue;
+      const otherPs = this.players.get(otherSlot.sessionId);
+      if (!otherPs || otherPs.frozen || otherPs.finished) continue;
+
+      const ox = otherSlot.tileX + 0.5;
+      const oy = otherSlot.tileY + 0.5;
+      const dist = Math.sqrt((ox - cx) ** 2 + (oy - cy) ** 2);
+
+      if (dist > KNOCKBACK_RADIUS) continue;
+
+      // Push direction (away from activator)
+      const angle = Math.atan2(oy - cy, ox - cx);
+      const pushX = Math.round(Math.cos(angle) * KNOCKBACK_DISTANCE);
+      const pushY = Math.round(Math.sin(angle) * KNOCKBACK_DISTANCE);
+
+      let newX = Math.max(0, Math.min(MOVE_MAX_X, otherSlot.tileX + pushX));
+      let newY = Math.max(0, Math.min(MOVE_MAX_Y, otherSlot.tileY + pushY));
+
+      // Step toward target, stopping at walls
+      const steps = Math.max(Math.abs(pushX), Math.abs(pushY));
+      const stepDx = pushX === 0 ? 0 : pushX / Math.abs(pushX);
+      const stepDy = pushY === 0 ? 0 : pushY / Math.abs(pushY);
+      let finalX = otherSlot.tileX;
+      let finalY = otherSlot.tileY;
+
+      for (let s = 0; s < steps; s++) {
+        const nx = Math.max(0, Math.min(MOVE_MAX_X, finalX + stepDx));
+        const ny = Math.max(0, Math.min(MOVE_MAX_Y, finalY + stepDy));
+        if (this.footprintHasWall(nx, ny)) break;
+        finalX = nx;
+        finalY = ny;
+      }
+
+      otherSlot.tileX = finalX;
+      otherSlot.tileY = finalY;
+
+      // Apply slow
+      otherPs.knockbackSlowUntil = Date.now() + KNOCKBACK_SLOW_MS;
+      if (otherPs.knockbackSlowTimer) clearTimeout(otherPs.knockbackSlowTimer);
+      otherPs.knockbackSlowTimer = setTimeout(() => {
+        const p = this.players.get(otherSlot.sessionId);
+        if (p) { p.knockbackSlowUntil = 0; p.knockbackSlowTimer = null; }
+        this.broadcastState();
+      }, KNOCKBACK_SLOW_MS);
+    }
+  }
+
+  private checkSlimeZones(sessionId: string, slot: PlayerSlot, ps: PlayerState): void {
+    if (ps.stuckUntil > Date.now()) return;
+
+    for (const zone of this.slimeZones) {
+      if (zone.ownerId === sessionId) continue; // don't get stuck by own slime
+
+      // Check if footprint overlaps slime zone
+      const overlapX = slot.tileX < zone.x + SLIME_SIZE && slot.tileX + FOOTPRINT > zone.x;
+      const overlapY = slot.tileY < zone.y + SLIME_SIZE && slot.tileY + FOOTPRINT > zone.y;
+
+      if (overlapX && overlapY) {
+        if (ps.shieldActive) {
+          ps.shieldActive = false;
+          this.broadcast('shieldUsed', { sessionId });
+          return;
+        }
+        ps.stuckUntil = Date.now() + SLIME_STUCK_MS;
+        this.broadcast('playerStuck', { sessionId });
+        return;
+      }
+    }
+  }
+
+  // ─── Button activation ────────────────────────────────────────────────
+
+  private tryActivateButton(sessionId: string, px: number, py: number): void {
+    const now = Date.now();
+    for (const btn of this.buttons) {
+      const overlapX = px < btn.x + 2 && px + FOOTPRINT > btn.x;
+      const overlapY = py < btn.y + 2 && py + FOOTPRINT > btn.y;
+      if (!overlapX || !overlapY) continue;
+      if ((this.buttonCooldowns.get(btn.id) ?? 0) > now) continue;
+      if (this.activeEffects.has(btn.id)) continue;
+      this.activateButton(btn, sessionId);
+      return;
+    }
+  }
+
+  private activateButton(btn: ButtonDef, activatorId: string): void {
+    let fillTerrain: number;
+    switch (btn.type) {
+      case ButtonType.ClosePath:    fillTerrain = Terrain.Wall; break;
+      case ButtonType.OpenHole:     fillTerrain = Terrain.Hole; break;
+      case ButtonType.TriggerSlide: fillTerrain = Terrain.Slide; break;
+      default: return;
+    }
+
+    const original = new Map<string, number>();
+    for (let dy = 0; dy < btn.targetH; dy++) {
+      for (let dx = 0; dx < btn.targetW; dx++) {
+        const tx = btn.targetX + dx;
+        const ty = btn.targetY + dy;
+        if (ty < 0 || ty > GRID_ROW_MAX || tx < 0 || tx > GRID_COL_MAX) continue;
+        const orig = this.terrainGrid[ty][tx];
+        if (orig === Terrain.Wall || orig === Terrain.Button) continue;
+        original.set(`${tx},${ty}`, orig);
+        this.terrainGrid[ty][tx] = fillTerrain;
+        this.broadcast('terrainChange', { tileX: tx, tileY: ty, terrain: fillTerrain });
+      }
+    }
+    if (original.size === 0) return;
+
+    this.buttonCooldowns.set(btn.id, Date.now() + BUTTON_COOLDOWN_MS);
+    this.broadcast('buttonActivated', { id: btn.id, type: btn.type });
+
+    const timer = setTimeout(() => this.revertButtonEffect(btn.id, original), BUTTON_COOLDOWN_MS);
+    this.activeEffects.set(btn.id, { original, timer });
+
+    const ps = this.players.get(activatorId);
+    if (ps) ps.buttonsActivated++;
+
+    if (fillTerrain === Terrain.Hole) {
+      for (const slot of this.state.slots) {
+        if (!slot.occupied) continue;
+        let holes = 0;
+        for (let fdy = 0; fdy < FOOTPRINT; fdy++) {
+          for (let fdx = 0; fdx < FOOTPRINT; fdx++) {
+            if (this.terrainAtMut(slot.tileX + fdx, slot.tileY + fdy) === Terrain.Hole) holes++;
+          }
+        }
+        if (holes >= HOLE_THRESHOLD) {
+          const pps = this.players.get(slot.sessionId);
+          if (pps && !pps.frozen) this.handleHole(slot.sessionId, slot, pps);
+        }
+      }
+    }
+    this.broadcastState();
+  }
+
+  private revertButtonEffect(buttonId: number, original: Map<string, number>): void {
+    this.activeEffects.delete(buttonId);
+    for (const [key, origTerrain] of original) {
+      const [tx, ty] = key.split(',').map(Number);
+      this.terrainGrid[ty][tx] = origTerrain;
+      this.broadcast('terrainChange', { tileX: tx, tileY: ty, terrain: origTerrain });
+    }
+    this.broadcast('buttonReverted', { id: buttonId });
+    this.broadcastState();
+  }
+
+  // ─── Helpers ───────────────────────────────────────────────────────────
+
+  private footprintHasWall(x: number, y: number): boolean {
+    for (let dy = 0; dy < FOOTPRINT; dy++)
+      for (let dx = 0; dx < FOOTPRINT; dx++)
+        if (this.terrainAtMut(x + dx, y + dy) === Terrain.Wall) return true;
+    return false;
+  }
+
+  private terrainAtMut(tileX: number, tileY: number): number {
+    if (tileX < 0 || tileX > GRID_COL_MAX || tileY < 0 || tileY > GRID_ROW_MAX) return Terrain.Normal;
     return this.terrainGrid[tileY]?.[tileX] ?? Terrain.Normal;
   }
 
-  // ─── State broadcast ──────────────────────────────────────────────────────
+  private clearPlayerTimers(sessionId: string): void {
+    const ps = this.players.get(sessionId);
+    if (!ps) return;
+    if (ps.holeTimer) clearTimeout(ps.holeTimer);
+    if (ps.penaltyTimer) clearTimeout(ps.penaltyTimer);
+    if (ps.speedBoostTimer) clearTimeout(ps.speedBoostTimer);
+    if (ps.knockbackSlowTimer) clearTimeout(ps.knockbackSlowTimer);
+  }
+
+  private dominantTerrain(tileX: number, tileY: number): number {
+    const counts = [0, 0, 0, 0, 0, 0, 0, 0];
+    for (let dy = 0; dy < FOOTPRINT; dy++)
+      for (let dx = 0; dx < FOOTPRINT; dx++)
+        counts[this.terrainAtMut(tileX + dx, tileY + dy)]++;
+    const priority = [Terrain.Hole, Terrain.Slide, Terrain.Crumble, Terrain.Slow, Terrain.Normal];
+    for (const t of priority) if (counts[t] > 0) return t;
+    return Terrain.Normal;
+  }
+
+  // ─── State broadcast ──────────────────────────────────────────────────
 
   private broadcastState(): void {
+    const now = Date.now();
     this.broadcast('state', {
       phase: this.phase,
       countdown: this.countdown,
+      finishCountdown: this.finishCountdown,
+      startTime: this.startTime,
       slots: this.state.slots.map(s => {
         const ps = this.players.get(s.sessionId);
         return {
@@ -472,9 +853,21 @@ export class RaceRoom extends Room<RaceState> {
           occupied: s.occupied,
           frozen: ps?.frozen ?? false,
           penalized: ps?.penalized ?? false,
-          boosted: (ps?.boostCharges ?? 0) > 0,
+          boosted: false, // boost terrain removed
+          finished: ps?.finished ?? false,
+          currentTerrain: s.occupied ? this.dominantTerrain(s.tileX, s.tileY) : Terrain.Normal,
+          heldPickup: ps?.heldPickup ?? null,
+          shieldActive: ps?.shieldActive ?? false,
+          speedBoosted: ps ? ps.speedBoostUntil > now : false,
+          stuck: ps ? ps.stuckUntil > now : false,
+          knockbackSlowed: ps ? ps.knockbackSlowUntil > now : false,
         };
       }),
     });
   }
+}
+
+function ordSuffix(n: number): string {
+  if (n % 100 >= 11 && n % 100 <= 13) return 'th';
+  switch (n % 10) { case 1: return 'st'; case 2: return 'nd'; case 3: return 'rd'; default: return 'th'; }
 }
