@@ -180,6 +180,7 @@ export class IsoScene extends Phaser.Scene {
   // ─── Buttons & pickups ───────────────────────────────────────────────────
   private buttons: ButtonDef[] = [];
   private buttonLabels: Phaser.GameObjects.Text[] = [];
+  private buttonGfx!: Phaser.GameObjects.Graphics;
   private pickups: PickupDef[] = [];
   private collectedPickupIds = new Set<number>();
   private pickupGfx!: Phaser.GameObjects.Graphics;
@@ -244,8 +245,9 @@ export class IsoScene extends Phaser.Scene {
     this.load.image('tiles_metal', '/tiles/metal.png');
 
     // Object sprites
-    this.load.image('wall_block', '/sprites/wall_block.png');
-    this.load.image('button_critter', '/sprites/button_critter.png');
+    this.load.spritesheet('wall_crates', '/sprites/wall_crates.png', { frameWidth: 177, frameHeight: 181 });
+    this.load.image('button_plate', '/sprites/button_plate.png');
+    this.load.spritesheet('bonfire', '/sprites/bonfire.png', { frameWidth: 105, frameHeight: 137 });
     this.load.spritesheet('crate_wood', '/sprites/crates_wood.png', { frameWidth: 128, frameHeight: 128 });
   }
 
@@ -326,6 +328,7 @@ export class IsoScene extends Phaser.Scene {
     this.drawFinishLine();
     this.crumbleGfx = this.add.graphics().setDepth(-0.3);
     this.pickupGfx = this.add.graphics().setDepth(-0.2);
+    this.buttonGfx = this.add.graphics().setDepth(-0.2);
     this.slimeGfx = this.add.graphics().setDepth(-0.4);
     this.initMinimap();
     this.staminaBarBg = this.add.graphics().setScrollFactor(0).setDepth(9999);
@@ -391,6 +394,7 @@ export class IsoScene extends Phaser.Scene {
 
     this.renderCrumbleWarnings(_time);
     this.renderPickupGlow(_time);
+    this.renderButtonGlow(_time);
     this.updateMinimapPlayers();
 
     // 8-direction key detection + auto-repeat + inertia
@@ -474,6 +478,17 @@ export class IsoScene extends Phaser.Scene {
     }
   }
 
+  /** Re-render only specific tiles (avoids full re-render for terrain changes). */
+  private renderTilesAt(tiles: { tileX: number; tileY: number }[]): void {
+    for (const { tileX, tileY } of tiles) {
+      const old = this.tileImages[tileY]?.[tileX];
+      if (old) old.destroy();
+      if (this.tileImages[tileY]) {
+        this.tileImages[tileY][tileX] = this.renderTile(tileX, tileY);
+      }
+    }
+  }
+
   /**
    * Terrain type → tile texture key + frame index.
    * Frame index picks a variant from the 3×6 grid (18 variants per sheet).
@@ -528,35 +543,39 @@ export class IsoScene extends Phaser.Scene {
       }
     }
 
-    // Also process crate texture — remove black background
+    // Process sprites with black backgrounds → transparent
+    this.removeBlackBg('wall_crates', 177, 181, 4, 1);
+    this.removeBlackBg('crate_wood', 128, 128, 6, 4);
+    this.removeBlackBg('bonfire', 105, 137, 4, 1);
+
+    this.tileTextureReady = true;
+  }
+
+  /** Remove black background from a spritesheet and recreate with frames. */
+  private removeBlackBg(key: string, frameW: number, frameH: number, cols: number, rows: number): void {
     try {
-      const crateSrc = this.textures.get('crate_wood').getSourceImage() as HTMLImageElement;
-      const crateCanvas = document.createElement('canvas');
-      crateCanvas.width = crateSrc.width;
-      crateCanvas.height = crateSrc.height;
-      const crateCtx = crateCanvas.getContext('2d', { willReadFrequently: true })!;
-      crateCtx.drawImage(crateSrc, 0, 0);
-      const crateData = crateCtx.getImageData(0, 0, crateCanvas.width, crateCanvas.height);
-      const cd = crateData.data;
-      for (let i = 0; i < cd.length; i += 4) {
-        if (cd[i] <= 10 && cd[i + 1] <= 10 && cd[i + 2] <= 10) {
-          cd[i + 3] = 0;
-        }
+      const src = this.textures.get(key).getSourceImage() as HTMLImageElement;
+      const canvas = document.createElement('canvas');
+      canvas.width = src.width;
+      canvas.height = src.height;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
+      ctx.drawImage(src, 0, 0);
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const d = imageData.data;
+      for (let i = 0; i < d.length; i += 4) {
+        if (d[i] <= 12 && d[i + 1] <= 12 && d[i + 2] <= 12) d[i + 3] = 0;
       }
-      crateCtx.putImageData(crateData, 0, 0);
-      this.textures.remove('crate_wood');
-      const crateTex = this.textures.addCanvas('crate_wood', crateCanvas)!;
-      // Add 128×128 frames (6 cols × 4 rows)
-      for (let r = 0; r < 4; r++) {
-        for (let c = 0; c < 6; c++) {
-          crateTex.add(r * 6 + c, 0, c * 128, r * 128, 128, 128);
+      ctx.putImageData(imageData, 0, 0);
+      this.textures.remove(key);
+      const tex = this.textures.addCanvas(key, canvas)!;
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          tex.add(r * cols + c, 0, c * frameW, r * frameH, frameW, frameH);
         }
       }
     } catch (e) {
-      console.warn('Crate texture processing failed:', e);
+      console.warn(`[removeBlackBg] ${key} failed:`, e);
     }
-
-    this.tileTextureReady = true;
   }
 
   private renderTile(tx: number, ty: number): Phaser.GameObjects.Image | null {
@@ -566,46 +585,74 @@ export class IsoScene extends Phaser.Scene {
     const sy = this.originY + y;
     const tileDepth = isoDepth(tx, ty);
 
-    // Hole: Graphics-drawn dark void with depth rim (no texture)
+    // Hole: dark void with layered depth effect
     if (terrain === Terrain.Hole) {
       const pts = this.rhombusPoints(sx, sy);
-      this.tileGfx.fillStyle(0x0c1018, 1);
+      // Outer dark fill
+      this.tileGfx.fillStyle(0x050810, 1);
       this.tileGfx.fillPoints(pts, true);
-      this.tileGfx.lineStyle(3, 0x000000, 0.8);
+      // Inner slightly lighter area (depth gradient illusion)
+      const inner = [
+        { x: sx, y: sy + 4 },
+        { x: sx + TILE_W / 2 - 6, y: sy + TILE_H / 2 },
+        { x: sx, y: sy + TILE_H - 4 },
+        { x: sx - TILE_W / 2 + 6, y: sy + TILE_H / 2 },
+      ];
+      this.tileGfx.fillStyle(0x0a1520, 1);
+      this.tileGfx.fillPoints(inner, true);
+      // Outer rim
+      this.tileGfx.lineStyle(2, 0x000000, 0.9);
       this.tileGfx.strokePoints(pts, true);
-      this.tileGfx.lineStyle(2, 0x445566, 0.6);
+      // Top edge highlight (lip of the hole)
+      this.tileGfx.lineStyle(2, 0x556677, 0.5);
       this.tileGfx.beginPath();
-      this.tileGfx.moveTo(pts[3].x + 6, pts[3].y);
-      this.tileGfx.lineTo(pts[0].x, pts[0].y + 4);
-      this.tileGfx.lineTo(pts[1].x - 6, pts[1].y);
+      this.tileGfx.moveTo(pts[3].x + 4, pts[3].y);
+      this.tileGfx.lineTo(pts[0].x, pts[0].y + 3);
+      this.tileGfx.lineTo(pts[1].x - 4, pts[1].y);
       this.tileGfx.strokePath();
       return null;
     }
 
-    // Wall: 3D block sprite instead of flat tile
+    // Wall: stone floor tile + tall crate on top
     if (terrain === Terrain.Wall) {
-      const wallImg = this.add.image(sx, sy + TILE_H / 2, 'wall_block');
-      wallImg.setScale(2.0); // 32×32 → 64×64
-      wallImg.setDepth(tileDepth);
-      // Also draw the side extrusion
-      this.drawWallBlock(sx, sy);
-      return wallImg;
-    }
-
-    // Button: bonfire sprite on top of a stone ground tile
-    if (terrain === Terrain.Button) {
-      // Stone floor underneath
+      // Floor underneath (covers any shadow)
       if (this.tileTextureReady && this.TERRAIN_TILE_MAP[Terrain.Normal]) {
         const stoneDef = this.TERRAIN_TILE_MAP[Terrain.Normal];
-        const stoneImg = this.add.image(sx, sy + TILE_H / 2, stoneDef.key, stoneDef.frames[0]);
-        stoneImg.setScale(0.5);
-        stoneImg.setDepth(-1);
+        const floor = this.add.image(sx, sy + TILE_H / 2, stoneDef.key, stoneDef.frames[0]);
+        floor.setScale(0.5);
+        floor.setDepth(-1);
       }
-      // Boar critter as button marker — 46×32 native, ~40% of spacesuit size
-      const btnImg = this.add.image(sx, sy + TILE_H / 2, 'button_critter');
-      btnImg.setScale(1.17);
-      btnImg.setDepth(tileDepth + 0.1);
-      return btnImg;
+      // Crate block on top
+      const frame = (tx + ty) % 4;
+      const wallSprite = this.add.sprite(sx, sy + TILE_H / 2, 'wall_crates', frame);
+      wallSprite.setScale(0.38);
+      wallSprite.setOrigin(0.5, 0.78);
+      wallSprite.setDepth(tileDepth + 0.5);
+      return wallSprite as unknown as Phaser.GameObjects.Image;
+    }
+
+    // Button: bonfire barrel sitting on a normal ground tile
+    if (terrain === Terrain.Button) {
+      // Draw the same textured ground as Normal terrain
+      if (this.tileTextureReady && this.TERRAIN_TILE_MAP[Terrain.Normal]) {
+        const stoneDef = this.TERRAIN_TILE_MAP[Terrain.Normal];
+        const frameIdx = stoneDef.frames[(tx + ty * 3) % stoneDef.frames.length];
+        const floor = this.add.image(sx, sy + TILE_H / 2, stoneDef.key, frameIdx);
+        floor.setScale(0.5);
+        floor.setDepth(tileDepth);
+      } else {
+        // Fallback flat diamond
+        const pts = this.rhombusPoints(sx, sy);
+        this.tileGfx.fillStyle(TERRAIN_COLORS[0][0], 1);
+        this.tileGfx.fillPoints(pts, true);
+      }
+      // Bonfire barrel — sits on tile surface
+      const frame = (tx + ty) % 4;
+      const fire = this.add.sprite(sx, sy + TILE_H, 'bonfire', frame);
+      fire.setScale(0.32);
+      fire.setOrigin(0.5, 1.0);
+      fire.setDepth(tileDepth + 0.1);
+      return fire as unknown as Phaser.GameObjects.Image;
     }
 
     // Textured floor tile
@@ -616,6 +663,7 @@ export class IsoScene extends Phaser.Scene {
         const img = this.add.image(sx, sy + TILE_H / 2, tileDef.key, frameIdx);
         img.setScale(0.5);
         img.setDepth(-1);
+        this.drawTerrainBorders(tx, ty, terrain, sx, sy);
         return img;
       }
     }
@@ -626,47 +674,89 @@ export class IsoScene extends Phaser.Scene {
     const pts = this.rhombusPoints(sx, sy);
     this.tileGfx.fillStyle(fill, 1);
     this.tileGfx.fillPoints(pts, true);
+    this.drawTerrainBorders(tx, ty, terrain, sx, sy);
     return null;
   }
 
-  /** Draw extruded side faces below a wall tile to create a 3D block effect. */
+  /** Draw border edges where terrain type changes between adjacent tiles. */
+  private drawTerrainBorders(tx: number, ty: number, terrain: number, sx: number, sy: number): void {
+    // Check each neighbor — if different terrain, draw a border edge
+    const neighbors: [number, number, { x: number; y: number }, { x: number; y: number }][] = [
+      [tx + 1, ty, { x: sx + TILE_W / 2, y: sy + TILE_H / 2 }, { x: sx, y: sy + TILE_H }],  // right edge
+      [tx - 1, ty, { x: sx, y: sy }, { x: sx - TILE_W / 2, y: sy + TILE_H / 2 }],              // left edge (top)
+      [tx, ty + 1, { x: sx, y: sy + TILE_H }, { x: sx - TILE_W / 2, y: sy + TILE_H / 2 }],    // bottom-left
+      [tx, ty - 1, { x: sx + TILE_W / 2, y: sy + TILE_H / 2 }, { x: sx, y: sy }],              // top-right
+    ];
+
+    for (const [nx, ny, p1, p2] of neighbors) {
+      const nt = this.localTerrain[ny]?.[nx] ?? -1;
+      if (nt !== terrain && nt !== -1) {
+        this.tileGfx.lineStyle(1, 0x000000, 0.35);
+        this.tileGfx.beginPath();
+        this.tileGfx.moveTo(p1.x, p1.y);
+        this.tileGfx.lineTo(p2.x, p2.y);
+        this.tileGfx.strokePath();
+      }
+    }
+  }
+
+  /** Draw a 3D isometric wall block using pure Graphics — fits the tile diamond exactly. */
   private drawWallBlock(sx: number, sy: number): void {
-    const wallH = 20; // pixel height of the wall extrusion
+    const wallH = 18;
+    const hw = TILE_W / 2; // 32
+    const hh = TILE_H / 2; // 16
+
+    // Top face (diamond) — lighter stone
+    this.tileGfx.fillStyle(0x667788, 1);
+    this.tileGfx.beginPath();
+    this.tileGfx.moveTo(sx, sy);            // top
+    this.tileGfx.lineTo(sx + hw, sy + hh);  // right
+    this.tileGfx.lineTo(sx, sy + TILE_H);   // bottom
+    this.tileGfx.lineTo(sx - hw, sy + hh);  // left
+    this.tileGfx.closePath();
+    this.tileGfx.fillPath();
+
+    // Top face highlight edges
+    this.tileGfx.lineStyle(1, 0x8899aa, 0.7);
+    this.tileGfx.beginPath();
+    this.tileGfx.moveTo(sx - hw, sy + hh);
+    this.tileGfx.lineTo(sx, sy);
+    this.tileGfx.lineTo(sx + hw, sy + hh);
+    this.tileGfx.strokePath();
 
     // Right face (darker)
-    this.tileGfx.fillStyle(0x2a2a3a, 1);
-    this.tileGfx.beginPath();
-    this.tileGfx.moveTo(sx, sy + TILE_H);
-    this.tileGfx.lineTo(sx + TILE_W / 2, sy + TILE_H / 2);
-    this.tileGfx.lineTo(sx + TILE_W / 2, sy + TILE_H / 2 + wallH);
-    this.tileGfx.lineTo(sx, sy + TILE_H + wallH);
-    this.tileGfx.closePath();
-    this.tileGfx.fillPath();
-
-    // Right face edge
-    this.tileGfx.lineStyle(1, 0x000000, 0.5);
-    this.tileGfx.strokePath();
-
-    // Left face (slightly lighter)
     this.tileGfx.fillStyle(0x3a3a4e, 1);
     this.tileGfx.beginPath();
-    this.tileGfx.moveTo(sx, sy + TILE_H);
-    this.tileGfx.lineTo(sx - TILE_W / 2, sy + TILE_H / 2);
-    this.tileGfx.lineTo(sx - TILE_W / 2, sy + TILE_H / 2 + wallH);
-    this.tileGfx.lineTo(sx, sy + TILE_H + wallH);
+    this.tileGfx.moveTo(sx + hw, sy + hh);          // top-right of diamond
+    this.tileGfx.lineTo(sx, sy + TILE_H);             // bottom of diamond
+    this.tileGfx.lineTo(sx, sy + TILE_H + wallH);     // bottom extruded
+    this.tileGfx.lineTo(sx + hw, sy + hh + wallH);    // right extruded
     this.tileGfx.closePath();
     this.tileGfx.fillPath();
 
-    // Left face edge
-    this.tileGfx.lineStyle(1, 0x000000, 0.5);
-    this.tileGfx.strokePath();
-
-    // Top face bright highlight
-    this.tileGfx.lineStyle(2, 0x888899, 0.6);
+    // Left face (slightly lighter)
+    this.tileGfx.fillStyle(0x4a4a5e, 1);
     this.tileGfx.beginPath();
-    this.tileGfx.moveTo(sx - TILE_W / 2, sy + TILE_H / 2);
-    this.tileGfx.lineTo(sx, sy);
-    this.tileGfx.lineTo(sx + TILE_W / 2, sy + TILE_H / 2);
+    this.tileGfx.moveTo(sx - hw, sy + hh);            // top-left of diamond
+    this.tileGfx.lineTo(sx, sy + TILE_H);             // bottom of diamond
+    this.tileGfx.lineTo(sx, sy + TILE_H + wallH);     // bottom extruded
+    this.tileGfx.lineTo(sx - hw, sy + hh + wallH);    // left extruded
+    this.tileGfx.closePath();
+    this.tileGfx.fillPath();
+
+    // Edge outlines
+    this.tileGfx.lineStyle(1, 0x222233, 0.6);
+    // Right face outline
+    this.tileGfx.beginPath();
+    this.tileGfx.moveTo(sx + hw, sy + hh);
+    this.tileGfx.lineTo(sx + hw, sy + hh + wallH);
+    this.tileGfx.lineTo(sx, sy + TILE_H + wallH);
+    this.tileGfx.strokePath();
+    // Left face outline
+    this.tileGfx.beginPath();
+    this.tileGfx.moveTo(sx - hw, sy + hh);
+    this.tileGfx.lineTo(sx - hw, sy + hh + wallH);
+    this.tileGfx.lineTo(sx, sy + TILE_H + wallH);
     this.tileGfx.strokePath();
   }
 
@@ -1038,6 +1128,21 @@ export class IsoScene extends Phaser.Scene {
     }
   }
 
+  /** Render a pulsing magenta glow under each button to signal interactivity. */
+  private renderButtonGlow(time: number): void {
+    this.buttonGfx.clear();
+    const pulse = 0.2 + Math.sin(time / 400) * 0.15;
+
+    for (const btn of this.buttons) {
+      const { x, y } = tileToScreen(btn.x, btn.y);
+      const sx = this.originX + x;
+      const sy = this.originY + y + TILE_H / 2;
+
+      this.buttonGfx.fillStyle(0xff4488, pulse);
+      this.buttonGfx.fillEllipse(sx, sy, 30, 15);
+    }
+  }
+
   private renderPickups(): void {
     for (const s of this.pickupSprites) s.destroy();
     this.pickupSprites = [];
@@ -1170,7 +1275,15 @@ export class IsoScene extends Phaser.Scene {
 
     room.onMessage('terrainChange', (data: { tileX: number; tileY: number; terrain: number }) => {
       this.localTerrain[data.tileY][data.tileX] = data.terrain;
-      this.renderAllTiles();
+      this.renderTilesAt([data]);
+      this.renderMinimap();
+    });
+
+    room.onMessage('terrainChangeBatch', (changes: { tileX: number; tileY: number; terrain: number }[]) => {
+      for (const c of changes) {
+        this.localTerrain[c.tileY][c.tileX] = c.terrain;
+      }
+      this.renderTilesAt(changes);
       this.renderMinimap();
     });
 
@@ -1250,6 +1363,16 @@ export class IsoScene extends Phaser.Scene {
         this.emitAtPlayer(0xaaff00, 8);
       }
     });
+    room.onMessage('playerPushed', (data: { sessionId: string }) => {
+      // Small bump effect on pushed player
+      const pushSlot = this.slotBySession.get(data.sessionId);
+      if (pushSlot !== undefined) {
+        const av = this.avatars.get(pushSlot);
+        if (av) this.emitParticles(av.sprite.x, av.sprite.y, 0xffaa44, 6, 40);
+      }
+      if (data.sessionId === this.mySessionId) this.playTone(250, 0.08, 'square', 0.06);
+    });
+
     room.onMessage('knockbackBlast', (data: { x: number; y: number }) => {
       this.sfxKnockback();
       const { x, y } = tileToScreen(data.x, data.y);

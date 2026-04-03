@@ -53,6 +53,7 @@ const HOLE_PENALTY_MS  = 2000;
 const HOLE_PENALTY_CD  = 450;
 const CRUMBLE_DELAY_MS = 1500;
 const SLIDE_EXTRA_TILES = 1;
+const PUSH_STUN_MS = 200;
 
 // ─── Per-player state ────────────────────────────────────────────────────────
 
@@ -488,7 +489,15 @@ export class RaceRoom extends Room<RaceState> {
     if (newX === slot.tileX && newY === slot.tileY) return;
     if (this.isWall(newX, newY)) return;
 
-    // Save current position as last safe spot (before we step onto potentially dangerous terrain)
+    // Player collision — push other player if tile is occupied
+    const blocker = this.state.slots.find(s =>
+      s.occupied && s.sessionId !== sessionId && s.tileX === newX && s.tileY === newY
+    );
+    if (blocker) {
+      this.pushPlayer(blocker, delta, wantsSprint ? 2 : 1, sessionId);
+    }
+
+    // Save current position as last safe spot
     ps.lastSafeX = slot.tileX;
     ps.lastSafeY = slot.tileY;
 
@@ -498,6 +507,7 @@ export class RaceRoom extends Room<RaceState> {
     this.lastDirection.set(sessionId, direction);
 
     this.applyTerrainAt(sessionId, slot, ps, direction);
+    this.tryActivateButton(sessionId, slot.tileX, slot.tileY);
     this.checkPickupCollection(sessionId, slot, ps);
     this.checkSlimeZones(sessionId, slot, ps);
     this.checkFinishLine(sessionId, slot);
@@ -551,6 +561,54 @@ export class RaceRoom extends Room<RaceState> {
     this.broadcastState();
   }
 
+  // ─── Player collision (push) ────────────────────────────────────────────
+
+  /** Push a player in the given direction by `distance` tiles. */
+  private pushPlayer(
+    slot: PlayerSlot, delta: [number, number], distance: number, pusherId: string,
+  ): void {
+    const ps = this.players.get(slot.sessionId);
+    if (!ps || ps.frozen || ps.finished) return;
+
+    let finalX = slot.tileX;
+    let finalY = slot.tileY;
+
+    for (let step = 0; step < distance; step++) {
+      const nx = Math.max(0, Math.min(MOVE_MAX_X, finalX + delta[0]));
+      const ny = Math.max(0, Math.min(MOVE_MAX_Y, finalY + delta[1]));
+      if (nx === finalX && ny === finalY) break;
+      if (this.isWall(nx, ny)) break;
+      // Don't push into another player
+      const blocked = this.state.slots.find(s =>
+        s.occupied && s.sessionId !== slot.sessionId && s.sessionId !== pusherId
+        && s.tileX === nx && s.tileY === ny
+      );
+      if (blocked) break;
+      finalX = nx;
+      finalY = ny;
+    }
+
+    if (finalX !== slot.tileX || finalY !== slot.tileY) {
+      ps.lastSafeX = slot.tileX;
+      ps.lastSafeY = slot.tileY;
+      slot.tileX = finalX;
+      slot.tileY = finalY;
+
+      // Brief stun — can't move for PUSH_STUN_MS
+      ps.stuckUntil = Math.max(ps.stuckUntil, Date.now() + PUSH_STUN_MS);
+
+      // Apply terrain at landing
+      this.applyTerrainAt(slot.sessionId, slot, ps, 'S');
+
+      this.broadcast('playerPushed', {
+        sessionId: slot.sessionId,
+        pusherId,
+        x: finalX,
+        y: finalY,
+      });
+    }
+  }
+
   // ─── Single-tile terrain effects ────────────────────────────────────────
 
   private applyTerrainAt(
@@ -580,7 +638,7 @@ export class RaceRoom extends Room<RaceState> {
         ps.currentCooldown = SLOW_COOLDOWN;
         break;
       case Terrain.Button:
-        this.tryActivateButton(sessionId, slot.tileX, slot.tileY);
+        // Button activation handled separately in handleMove (proximity-based)
         break;
     }
   }
@@ -595,12 +653,7 @@ export class RaceRoom extends Room<RaceState> {
       s.tileX = p.lastSafeX; s.tileY = p.lastSafeY;
       p.frozen = false; p.holeTimer = null;
       p.immuneUntil = Date.now() + 2000; // 2s immunity after respawn
-      p.penalized = true; p.currentCooldown = HOLE_PENALTY_CD;
-      p.penaltyTimer = setTimeout(() => {
-        const pp = this.players.get(sessionId);
-        if (!pp) return;
-        pp.penalized = false; pp.currentCooldown = DEFAULT_COOLDOWN; pp.penaltyTimer = null;
-      }, HOLE_PENALTY_MS);
+      p.currentCooldown = DEFAULT_COOLDOWN;
       this.broadcastState();
     }, HOLE_RESPAWN_MS);
   }
@@ -815,10 +868,8 @@ export class RaceRoom extends Room<RaceState> {
   private tryActivateButton(sessionId: string, px: number, py: number): void {
     const now = Date.now();
     for (const btn of this.buttons) {
-      // Player tile matches button tile
-      const overlapX = px === btn.x;
-      const overlapY = py === btn.y;
-      if (!overlapX || !overlapY) continue;
+      // Activate if player is within 1 tile (handles diagonal movement skipping exact tile)
+      if (Math.abs(px - btn.x) > 1 || Math.abs(py - btn.y) > 1) continue;
       if ((this.buttonCooldowns.get(btn.id) ?? 0) > now) continue;
       if (this.activeEffects.has(btn.id)) continue;
       this.activateButton(btn, sessionId);
@@ -836,6 +887,7 @@ export class RaceRoom extends Room<RaceState> {
     }
 
     const original = new Map<string, number>();
+    const changes: { tileX: number; tileY: number; terrain: number }[] = [];
     for (let dy = 0; dy < btn.targetH; dy++) {
       for (let dx = 0; dx < btn.targetW; dx++) {
         const tx = btn.targetX + dx;
@@ -845,11 +897,13 @@ export class RaceRoom extends Room<RaceState> {
         if (orig === Terrain.Wall || orig === Terrain.Button) continue;
         original.set(`${tx},${ty}`, orig);
         this.terrainGrid[ty][tx] = fillTerrain;
-        this.broadcast('terrainChange', { tileX: tx, tileY: ty, terrain: fillTerrain });
+        changes.push({ tileX: tx, tileY: ty, terrain: fillTerrain });
       }
     }
     if (original.size === 0) return;
 
+    // Single batched broadcast instead of per-tile
+    this.broadcast('terrainChangeBatch', changes);
     this.buttonCooldowns.set(btn.id, Date.now() + BUTTON_COOLDOWN_MS);
     this.broadcast('buttonActivated', { id: btn.id, type: btn.type });
 
@@ -873,11 +927,13 @@ export class RaceRoom extends Room<RaceState> {
 
   private revertButtonEffect(buttonId: number, original: Map<string, number>): void {
     this.activeEffects.delete(buttonId);
+    const changes: { tileX: number; tileY: number; terrain: number }[] = [];
     for (const [key, origTerrain] of original) {
       const [tx, ty] = key.split(',').map(Number);
       this.terrainGrid[ty][tx] = origTerrain;
-      this.broadcast('terrainChange', { tileX: tx, tileY: ty, terrain: origTerrain });
+      changes.push({ tileX: tx, tileY: ty, terrain: origTerrain });
     }
+    this.broadcast('terrainChangeBatch', changes);
     this.broadcast('buttonReverted', { id: buttonId });
     this.broadcastState();
   }

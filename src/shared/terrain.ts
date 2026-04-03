@@ -361,7 +361,7 @@ export function generateTerrainMap(): number[][] {
 // ─── Button generation ──────────────────────────────────────────────────────
 
 const BUTTON_TARGET: Record<number, { w: number; h: number }> = {
-  [ButtonType.ClosePath]:    { w: 2, h: 6 },
+  [ButtonType.ClosePath]:    { w: 1, h: 5 },
   [ButtonType.OpenHole]:     { w: 3, h: 3 },
   [ButtonType.TriggerSlide]: { w: 5, h: 4 },
 };
@@ -397,6 +397,17 @@ export function generateButtons(map: number[][]): ButtonDef[] {
       // Single tile check
       const existing = map[by]?.[bx];
       if (existing === Terrain.Wall || existing === Terrain.Hole || existing === Terrain.Button) continue;
+
+      // Avoid placing too close to walls (2-tile radius)
+      let nearWall = false;
+      for (let dy = -2; dy <= 2 && !nearWall; dy++) {
+        for (let dx = -2; dx <= 2 && !nearWall; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          const t = map[by + dy]?.[bx + dx] ?? 0;
+          if (t === Terrain.Wall) nearWall = true;
+        }
+      }
+      if (nearWall) continue;
 
       const tx = bx + slot.targetAhead;
       const ty = by - Math.floor(target.h / 2);
