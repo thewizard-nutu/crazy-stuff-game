@@ -173,6 +173,8 @@ export class IsoScene extends Phaser.Scene {
   private pickupHudText!: Phaser.GameObjects.Text;
   private slimeGfx!: Phaser.GameObjects.Graphics;
   private slimeZones: { x: number; y: number; size: number }[] = [];
+  private pickupTweens: Phaser.Tweens.Tween[] = [];
+  private extraTileSprites: Phaser.GameObjects.GameObject[] = [];
 
   // ─── Crumble warnings ────────────────────────────────────────────────────
   private crumbleWarnings = new Map<string, number>();
@@ -355,6 +357,52 @@ export class IsoScene extends Phaser.Scene {
     this.setupInput();
     this.addHud();
     this.connectToRace().catch(console.error);
+
+    // Register cleanup on scene shutdown/destroy
+    const cleanup = () => this.cleanupScene();
+    this.events.on('shutdown', cleanup);
+    this.events.on('destroy', cleanup);
+  }
+
+  /** Destroy all scene resources to prevent memory leaks. */
+  private cleanupScene(): void {
+    // Leave multiplayer room
+    if (this.room) { this.room.leave(); this.room = null; }
+
+    // Clear announcement timer
+    if (this.announceTimer) { clearTimeout(this.announceTimer); this.announceTimer = null; }
+
+    // Destroy infinite pickup tweens
+    for (const t of this.pickupTweens) t.destroy();
+    this.pickupTweens = [];
+
+    // Destroy extra tile sprites (wall floors, button floors)
+    for (const s of this.extraTileSprites) s.destroy();
+    this.extraTileSprites = [];
+
+    // Destroy tile image grid
+    for (const row of this.tileImages) {
+      for (const img of row) { if (img) img.destroy(); }
+    }
+    this.tileImages = [];
+
+    // Destroy button labels
+    for (const l of this.buttonLabels) l.destroy();
+    this.buttonLabels = [];
+
+    // Destroy all avatars
+    for (const av of this.avatars.values()) {
+      av.sprite.destroy();
+      av.shadow.destroy();
+      av.label.destroy();
+      av.statusLabel.destroy();
+    }
+    this.avatars.clear();
+    this.slotBySession.clear();
+
+    // Clear tracking sets/maps
+    this.crumbleWarnings.clear();
+    this.collectedPickupIds.clear();
   }
 
   // ─── Update ────────────────────────────────────────────────────────────
@@ -481,6 +529,10 @@ export class IsoScene extends Phaser.Scene {
 
   private renderAllTiles(): void {
     this.tileGfx.clear();
+
+    // Destroy old extra tile sprites (wall floors, button floors)
+    for (const s of this.extraTileSprites) s.destroy();
+    this.extraTileSprites = [];
 
     // Destroy old tile images
     for (const row of this.tileImages) {
@@ -662,12 +714,14 @@ export class IsoScene extends Phaser.Scene {
       const wallFloor = this.add.image(sx, sy + TILE_H / 2, 'tiles_wood');
       wallFloor.setScale(TILE_W / 192);
       wallFloor.setDepth(-1);
+      this.extraTileSprites.push(wallFloor);
       // Crate block on top
       const frame = (tx + ty) % 4;
       const wallSprite = this.add.sprite(sx, sy + TILE_H / 2, 'wall_crates', frame);
       wallSprite.setScale(0.38);
       wallSprite.setOrigin(0.5, 0.78);
       wallSprite.setDepth(tileDepth + 0.5);
+      this.extraTileSprites.push(wallSprite);
       return wallSprite as unknown as Phaser.GameObjects.Image;
     }
 
@@ -677,12 +731,14 @@ export class IsoScene extends Phaser.Scene {
       const floor = this.add.image(sx, sy + TILE_H / 2, 'tiles_wood');
       floor.setScale(TILE_W / 192);
       floor.setDepth(tileDepth);
+      this.extraTileSprites.push(floor);
       // Bonfire barrel — sits on tile surface
       const frame = (tx + ty) % 4;
       const fire = this.add.sprite(sx, sy + TILE_H, 'bonfire', frame);
       fire.setScale(0.32);
       fire.setOrigin(0.5, 1.0);
       fire.setDepth(tileDepth + 0.1);
+      this.extraTileSprites.push(fire);
       return fire as unknown as Phaser.GameObjects.Image;
     }
 
@@ -1009,6 +1065,10 @@ export class IsoScene extends Phaser.Scene {
         av.label.destroy();
         av.statusLabel.destroy();
         this.avatars.delete(index);
+        // Clean up stale session→slot mappings
+        for (const [sid, si] of this.slotBySession) {
+          if (si === index) { this.slotBySession.delete(sid); break; }
+        }
       }
     }
   }
@@ -1187,6 +1247,8 @@ export class IsoScene extends Phaser.Scene {
   }
 
   private renderPickups(): void {
+    for (const t of this.pickupTweens) t.destroy();
+    this.pickupTweens = [];
     for (const s of this.pickupSprites) s.destroy();
     this.pickupSprites = [];
     this.pickupGfx.clear();
@@ -1210,8 +1272,8 @@ export class IsoScene extends Phaser.Scene {
       crate.setDepth(isoDepth(p.x, p.y) + 0.05);
       this.pickupSprites.push(crate);
 
-      // Gentle floating bob animation
-      this.tweens.add({
+      // Gentle floating bob animation — tracked for cleanup
+      const bobTween = this.tweens.add({
         targets: crate,
         y: sy - 4,
         duration: 800,
@@ -1219,6 +1281,7 @@ export class IsoScene extends Phaser.Scene {
         repeat: -1,
         ease: 'Sine.easeInOut',
       });
+      this.pickupTweens.push(bobTween);
     }
   }
 
@@ -1484,6 +1547,10 @@ export class IsoScene extends Phaser.Scene {
     this.raceStartTime = 0;
     this.slimeZones = [];
     this.renderSlimeZones();
+
+    // Clear tracking sets between matches
+    this.crumbleWarnings.clear();
+    this.collectedPickupIds.clear();
 
     // Force all avatars back to spawn area (server also resets positions)
     for (const av of this.avatars.values()) {
