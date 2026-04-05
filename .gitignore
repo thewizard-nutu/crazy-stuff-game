@@ -140,3 +140,7 @@ $RECYCLE.BIN/
 *.msm
 *.msp
 *.lnk
+
+# === Playwright MCP ===
+.playwright-data/
+.playwright-mcp/

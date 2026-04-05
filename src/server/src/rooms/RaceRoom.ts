@@ -206,7 +206,8 @@ export class RaceRoom extends Room<RaceState> {
     const spawnY = SPAWN_Y - 4 + idx * 2; // 5 players spaced 1 tile apart
 
     slot.sessionId = client.sessionId;
-    slot.playerName = options?.playerName ?? 'Player';
+    const rawName = (options?.playerName ?? 'Player').replace(/[^a-zA-Z0-9 ]/g, '').slice(0, 20).trim();
+    slot.playerName = rawName || 'Player';
     slot.tileX = SPAWN_X;
     slot.tileY = spawnY;
     slot.occupied = true;

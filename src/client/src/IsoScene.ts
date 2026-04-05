@@ -33,8 +33,7 @@ const SLOT_COLORS = [0xff8c00, 0x4488ff, 0x44bb44, 0xee44ee, 0xffdd44];
 
 /**
  * Each character type defines its sprite key prefix, frame size, and direction mapping.
- * Space suit: single spritesheet (3×4), 80×80 frames, rows = directions.
- * Knight: 4 separate spritesheets (one per direction), 512×512 frames, 3×3 grid each.
+ * PixelLab characters: 8 separate spritesheets (one per direction), 92×92 frames.
  */
 interface CharacterDef {
   key: string;
@@ -47,55 +46,42 @@ interface CharacterDef {
   dirMap: Record<string, { sheetSuffix?: string; row?: number; flipX: boolean }>;
 }
 
-const CHAR_SPACESUIT: CharacterDef = {
-  key: 'spacesuit',
-  multiSheet: false,
-  scale: 1.0,
-  framesPerDir: 3,
-  originX: 0.5,
-  originY: 0.85,
-  dirMap: {
-    S:  { row: 0, flipX: false },  // SE
-    SA: { row: 0, flipX: false },  // S → nearest is SE
-    A:  { row: 1, flipX: false },  // SW
-    WA: { row: 1, flipX: false },  // W → nearest is SW
-    W:  { row: 3, flipX: false },  // NW
-    WD: { row: 3, flipX: false },  // N → nearest is NW
-    D:  { row: 2, flipX: false },  // NE
-    SD: { row: 2, flipX: false },  // E → nearest is NE
-  },
+/** Direction key → PixelLab direction suffix for multi-sheet characters. */
+const PIXELLAB_DIR_MAP: Record<string, { sheetSuffix: string; flipX: boolean }> = {
+  S:  { sheetSuffix: '_south',       flipX: false },
+  SA: { sheetSuffix: '_south-west',  flipX: false },
+  A:  { sheetSuffix: '_west',        flipX: false },
+  WA: { sheetSuffix: '_north-west',  flipX: false },
+  W:  { sheetSuffix: '_north',       flipX: false },
+  WD: { sheetSuffix: '_north-east',  flipX: false },
+  D:  { sheetSuffix: '_east',        flipX: false },
+  SD: { sheetSuffix: '_south-east',  flipX: false },
 };
 
-const CHAR_KNIGHT: CharacterDef = {
-  key: 'knight',
-  multiSheet: true,
-  scale: 0.75,
-  framesPerDir: 9,
-  originX: 0.52,
-  originY: 0.50,
-  dirMap: {
-    S:  { sheetSuffix: '_S',  flipX: false },  // SE (dir1)
-    SA: { sheetSuffix: '_SA', flipX: false },  // S  (dir2)
-    A:  { sheetSuffix: '_A',  flipX: false },  // SW (dir3)
-    WA: { sheetSuffix: '_WA', flipX: false },  // W  (dir4)
-    W:  { sheetSuffix: '_W',  flipX: false },  // NW (dir5)
-    WD: { sheetSuffix: '_WD', flipX: false },  // N  (dir6)
-    D:  { sheetSuffix: '_D',  flipX: false },  // NE (dir7)
-    SD: { sheetSuffix: '_SD', flipX: false },  // E  (dir8)
-  },
-};
+/** All PixelLab character keys — used for preload and animation creation. */
+const PL_CHAR_KEYS = ['male', 'female', 'male-medium', 'female-medium', 'male-dark', 'female-dark'];
+
+function makeCharDef(key: string): CharacterDef {
+  return { key, multiSheet: true, scale: 0.75, framesPerDir: 6, originX: 0.5, originY: 0.85, dirMap: PIXELLAB_DIR_MAP };
+}
+
+const CHAR_MALE         = makeCharDef('male');
+const CHAR_FEMALE       = makeCharDef('female');
+const CHAR_MALE_MED     = makeCharDef('male-medium');
+const CHAR_FEMALE_MED   = makeCharDef('female-medium');
+const CHAR_MALE_DARK    = makeCharDef('male-dark');
+const CHAR_FEMALE_DARK  = makeCharDef('female-dark');
 
 /**
  * Player slot → character + tint color.
- * Slot 0: space suit orange, Slot 1: knight blue, Slot 2: space suit green,
- * Slot 3: knight purple, Slot 4: space suit yellow.
+ * Each slot gets a different skin tone / gender combo.
  */
 const SLOT_CHARACTERS: { char: CharacterDef; tint: number }[] = [
-  { char: CHAR_SPACESUIT, tint: 0xff8c00 },  // orange
-  { char: CHAR_KNIGHT,    tint: 0x4488ff },  // blue
-  { char: CHAR_SPACESUIT, tint: 0x44bb44 },  // green
-  { char: CHAR_KNIGHT,    tint: 0xee44ee },  // purple
-  { char: CHAR_SPACESUIT, tint: 0xffdd44 },  // yellow
+  { char: CHAR_MALE,        tint: 0xffffff },
+  { char: CHAR_FEMALE_MED,  tint: 0xffffff },
+  { char: CHAR_MALE_DARK,   tint: 0xffffff },
+  { char: CHAR_FEMALE,      tint: 0xffffff },
+  { char: CHAR_MALE_MED,    tint: 0xffffff },
 ];
 
 // ─── Isometric math ──────────────────────────────────────────────────────────
@@ -154,7 +140,7 @@ export class IsoScene extends Phaser.Scene {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private room: any = null;
 
-  private playerFacing = 'S';
+  private playerFacing = 'SD';
 
   private avatars = new Map<number, AvatarData>();
   private mySlotIndex = -1;
@@ -223,17 +209,16 @@ export class IsoScene extends Phaser.Scene {
   // ─── Preload ───────────────────────────────────────────────────────────
 
   preload(): void {
-    // Character sprites
-    this.load.spritesheet('spacesuit', '/sprites/space_suit.png', { frameWidth: 80, frameHeight: 80 });
-    // Knight: 8 directions (dir1=SE, dir2=S, dir3=SW, dir4=W, dir5=NW, dir6=N, dir7=NE, dir8=E)
-    this.load.spritesheet('knight_S',  '/sprites/knight/walk_dir1.png', { frameWidth: 512, frameHeight: 512 });
-    this.load.spritesheet('knight_SA', '/sprites/knight/walk_dir2.png', { frameWidth: 512, frameHeight: 512 });
-    this.load.spritesheet('knight_A',  '/sprites/knight/walk_dir3.png', { frameWidth: 512, frameHeight: 512 });
-    this.load.spritesheet('knight_WA', '/sprites/knight/walk_dir4.png', { frameWidth: 512, frameHeight: 512 });
-    this.load.spritesheet('knight_W',  '/sprites/knight/walk_dir5.png', { frameWidth: 512, frameHeight: 512 });
-    this.load.spritesheet('knight_WD', '/sprites/knight/walk_dir6.png', { frameWidth: 512, frameHeight: 512 });
-    this.load.spritesheet('knight_D',  '/sprites/knight/walk_dir7.png', { frameWidth: 512, frameHeight: 512 });
-    this.load.spritesheet('knight_SD', '/sprites/knight/walk_dir8.png', { frameWidth: 512, frameHeight: 512 });
+    // PixelLab character sprites — 8 directions, 92×92 frames
+    const PL_DIRS = ['south', 'south-east', 'east', 'north-east', 'north', 'north-west', 'west', 'south-west'];
+    for (const charKey of PL_CHAR_KEYS) {
+      for (const dir of PL_DIRS) {
+        this.load.spritesheet(`${charKey}_${dir}`, `/sprites/characters/${charKey}/walk_${dir}.png`, { frameWidth: 92, frameHeight: 92 });
+        this.load.spritesheet(`${charKey}_run_${dir}`, `/sprites/characters/${charKey}/run_${dir}.png`, { frameWidth: 92, frameHeight: 92 });
+        this.load.spritesheet(`${charKey}_jump_${dir}`, `/sprites/characters/${charKey}/jump_${dir}.png`, { frameWidth: 92, frameHeight: 92 });
+        this.load.spritesheet(`${charKey}_idle_${dir}`, `/sprites/characters/${charKey}/idle_${dir}.png`, { frameWidth: 92, frameHeight: 92 });
+      }
+    }
 
     // Tile textures (SBS 128×64 isometric tiles, 3×6 grid per sheet)
     this.load.image('tiles_grass', '/tiles/grass.png');
@@ -259,7 +244,8 @@ export class IsoScene extends Phaser.Scene {
 
     // Create walk animations for all character types (8 directions)
     const allDirs = ['S', 'SA', 'A', 'WA', 'W', 'WD', 'D', 'SD'];
-    for (const charDef of [CHAR_SPACESUIT, CHAR_KNIGHT]) {
+    for (const charKey of PL_CHAR_KEYS) {
+      const charDef = makeCharDef(charKey);
       for (const dir of allDirs) {
         const mapping = charDef.dirMap[dir];
         if (charDef.multiSheet) {
@@ -287,6 +273,38 @@ export class IsoScene extends Phaser.Scene {
             repeat: -1,
           });
         }
+      }
+    }
+
+    // Create run, jump, and idle animations for all PixelLab characters
+    for (const charKey of PL_CHAR_KEYS) {
+      const charDef = makeCharDef(charKey);
+      for (const dir of allDirs) {
+        const mapping = charDef.dirMap[dir];
+        // Run animation (6 frames, looping)
+        const runTexture = `${charDef.key}_run${mapping.sheetSuffix}`;
+        this.anims.create({
+          key: `${charDef.key}_run_${dir}`,
+          frames: this.anims.generateFrameNumbers(runTexture, { start: 0, end: 5 }),
+          frameRate: 12,
+          repeat: -1,
+        });
+        // Jump animation (9 frames, plays once)
+        const jumpTexture = `${charDef.key}_jump${mapping.sheetSuffix}`;
+        this.anims.create({
+          key: `${charDef.key}_jump_${dir}`,
+          frames: this.anims.generateFrameNumbers(jumpTexture, { start: 0, end: 8 }),
+          frameRate: 16,
+          repeat: 0,
+        });
+        // Idle animation (4 frames, looping, slow)
+        const idleTexture = `${charDef.key}_idle${mapping.sheetSuffix}`;
+        this.anims.create({
+          key: `${charDef.key}_idle_${dir}`,
+          frames: this.anims.generateFrameNumbers(idleTexture, { start: 0, end: 3 }),
+          frameRate: 4,
+          repeat: -1,
+        });
       }
     }
 
@@ -1054,8 +1072,7 @@ export class IsoScene extends Phaser.Scene {
   private updateAvatarVisual(av: AvatarData, isLocal: boolean): void {
     const config = SLOT_CHARACTERS[av.slotIndex % SLOT_CHARACTERS.length];
     const charDef = config.char;
-    const dir = isLocal ? this.playerFacing : 'S';
-    const animKey = `${charDef.key}_walk_${dir}`;
+    const dir = isLocal ? this.playerFacing : 'SD';
     const mapping = charDef.dirMap[dir];
 
     // Moving = lerp in progress OR holding key OR recently sent input OR recently changed tile
@@ -1067,29 +1084,35 @@ export class IsoScene extends Phaser.Scene {
       : (now - av.lastTileChange < 500);
     const isMoving = isLerping || isHoldingKey || recentlyActive;
 
-    if (isMoving) {
+    // Pick animation: jump (if mid-jump) > run (if sprinting) > walk
+    const isJumping = av.jumpOffset < -2;
+    let animKey: string;
+    if (isJumping) {
+      animKey = `${charDef.key}_jump_${dir}`;
+    } else if (isMoving && (av.sprinting || av.speedBoosted)) {
+      animKey = `${charDef.key}_run_${dir}`;
+    } else {
+      animKey = `${charDef.key}_walk_${dir}`;
+    }
+
+    if (isMoving || isJumping) {
       // Always force-play the correct direction animation (handles rapid direction switches)
       const currentKey = av.sprite.anims.currentAnim?.key;
       if (currentKey !== animKey || !av.sprite.anims.isPlaying) {
         av.sprite.play(animKey);
       }
-      // Animation speed: faster when sprinting, slower on slow tiles
-      if (av.sprinting || av.speedBoosted) {
-        av.sprite.anims.timeScale = 2.0;
-      } else if (av.currentTerrain === Terrain.Slow) {
+      // Animation speed: slower on slow tiles
+      if (av.currentTerrain === Terrain.Slow) {
         av.sprite.anims.timeScale = 0.5;
       } else {
         av.sprite.anims.timeScale = 1.0;
       }
     } else {
-      // Truly idle — static frame of current direction
-      if (av.sprite.anims.isPlaying) {
-        av.sprite.stop();
-        if (charDef.multiSheet) {
-          av.sprite.setTexture(`${charDef.key}${mapping.sheetSuffix}`, 0);
-        } else {
-          av.sprite.setFrame((mapping.row ?? 0) * charDef.framesPerDir);
-        }
+      // Idle — play breathing idle animation
+      const idleKey = `${charDef.key}_idle_${dir}`;
+      const currentKey = av.sprite.anims.currentAnim?.key;
+      if (currentKey !== idleKey || !av.sprite.anims.isPlaying) {
+        av.sprite.play(idleKey);
       }
     }
 
@@ -1247,7 +1270,8 @@ export class IsoScene extends Phaser.Scene {
   // ─── Network ───────────────────────────────────────────────────────────
 
   private async connectToRace(): Promise<void> {
-    const name = window.prompt('Enter your name:', '')?.trim() || 'Player';
+    const raw = window.prompt('Enter your name (max 20 characters, letters & numbers only):', '')?.trim() || 'Player';
+    const name = raw.replace(/[^a-zA-Z0-9 ]/g, '').slice(0, 20).trim() || 'Player';
 
     const { Client } = await import('colyseus.js');
     // Dynamic WebSocket URL — works on localhost, LAN, tunnels, and production
