@@ -12,7 +12,7 @@ export const TILE_W = 64;
 export const TILE_H = 32;
 
 const TILE_OUTLINE = 0x000000;
-const FINISH_COLOR = 0x44ff44;
+const FINISH_COLOR = 0x111111;
 
 // ─── Terrain rendering colours ───────────────────────────────────────────────
 
@@ -222,7 +222,7 @@ export class IsoScene extends Phaser.Scene {
       }
     }
 
-    // Tile textures (SBS 128×64 isometric tiles, 3×6 grid per sheet)
+    // Tile textures
     this.load.image('tiles_grass', '/tiles/grass.png');
     this.load.image('tiles_dry', '/tiles/dry.png');
     this.load.image('tiles_ice', '/tiles/ice.png');
@@ -231,6 +231,8 @@ export class IsoScene extends Phaser.Scene {
     this.load.image('tiles_stones', '/tiles/stones.png');
     this.load.image('tiles_metal', '/tiles/metal.png');
     this.load.image('tiles_wood_src', '/tiles/wood.png');
+    // Ground background image
+    this.load.image('ground_bg', '/tiles/ground_bg.png');
 
     // Object sprites
     this.load.spritesheet('wall_crates', '/sprites/wall_crates.png', { frameWidth: 177, frameHeight: 181 });
@@ -344,6 +346,33 @@ export class IsoScene extends Phaser.Scene {
     const worldW = gridW + pad * 2;
     const worldH = gridH + pad * 2;
     this.cameras.main.setBounds(0, 0, worldW, worldH);
+
+    // Ground background — masked to the walkable diamond area
+    const mapCenterTile = tileToScreen(Math.floor(GRID_COLS / 2), Math.floor(GRID_ROWS / 2));
+    const groundBg = this.add.image(
+      this.originX + mapCenterTile.x,
+      this.originY + mapCenterTile.y + TILE_H / 2,
+      'ground_bg'
+    );
+    groundBg.setDisplaySize(gridW * 1.05, gridH * 1.05);
+    groundBg.setDepth(-10);
+
+    // Create diamond mask to clip ground to walkable area
+    const topT = tileToScreen(0, 0);
+    const rightT = tileToScreen(GRID_COLS - 1, 0);
+    const bottomT = tileToScreen(GRID_COLS - 1, GRID_ROWS - 1);
+    const leftT = tileToScreen(0, GRID_ROWS - 1);
+    const mask = this.add.graphics();
+    mask.fillStyle(0xffffff);
+    mask.beginPath();
+    mask.moveTo(this.originX + topT.x, this.originY + topT.y);
+    mask.lineTo(this.originX + rightT.x + TILE_W / 2, this.originY + rightT.y + TILE_H / 2);
+    mask.lineTo(this.originX + bottomT.x, this.originY + bottomT.y + TILE_H);
+    mask.lineTo(this.originX + leftT.x - TILE_W / 2, this.originY + leftT.y + TILE_H / 2);
+    mask.closePath();
+    mask.fillPath();
+    mask.setVisible(false);
+    groundBg.setMask(mask.createGeometryMask());
 
     this.drawTileGrid();
     this.drawFinishLine();
@@ -708,14 +737,8 @@ export class IsoScene extends Phaser.Scene {
       return null;
     }
 
-    // Wall: wood floor tile + tall crate on top
+    // Wall: background shows through + crate on top
     if (terrain === Terrain.Wall) {
-      // Floor underneath
-      const wallFloor = this.add.image(sx, sy + TILE_H / 2, 'tiles_wood');
-      wallFloor.setScale(TILE_W / 192);
-      wallFloor.setDepth(-1);
-      this.extraTileSprites.push(wallFloor);
-      // Crate block on top
       const frame = (tx + ty) % 4;
       const wallSprite = this.add.sprite(sx, sy + TILE_H / 2, 'wall_crates', frame);
       wallSprite.setScale(0.38);
@@ -725,14 +748,8 @@ export class IsoScene extends Phaser.Scene {
       return wallSprite as unknown as Phaser.GameObjects.Image;
     }
 
-    // Button: bonfire barrel sitting on a normal ground tile
+    // Button: background shows through + bonfire on top
     if (terrain === Terrain.Button) {
-      // Draw the same wood ground as Normal terrain
-      const floor = this.add.image(sx, sy + TILE_H / 2, 'tiles_wood');
-      floor.setScale(TILE_W / 192);
-      floor.setDepth(tileDepth);
-      this.extraTileSprites.push(floor);
-      // Bonfire barrel — sits on tile surface
       const frame = (tx + ty) % 4;
       const fire = this.add.sprite(sx, sy + TILE_H, 'bonfire', frame);
       fire.setScale(0.32);
@@ -742,13 +759,9 @@ export class IsoScene extends Phaser.Scene {
       return fire as unknown as Phaser.GameObjects.Image;
     }
 
-    // Normal terrain: wood floor
+    // Normal terrain: background image shows through
     if (terrain === Terrain.Normal) {
-      const img = this.add.image(sx, sy + TILE_H / 2, 'tiles_wood');
-      img.setScale(TILE_W / 192); // 192px native → 64px tile width
-      img.setDepth(-1);
-      this.drawTerrainBorders(tx, ty, terrain, sx, sy);
-      return img;
+      return null;
     }
 
     // Textured floor tile (non-Normal terrain)
@@ -764,12 +777,8 @@ export class IsoScene extends Phaser.Scene {
       }
     }
 
-    // Fallback: wood floor (same as Normal)
-    const fallback = this.add.image(sx, sy + TILE_H / 2, 'tiles_wood');
-    fallback.setScale(TILE_W / 192);
-    fallback.setDepth(-1);
-    this.drawTerrainBorders(tx, ty, terrain, sx, sy);
-    return fallback;
+    // Fallback: background shows through
+    return null;
   }
 
   /** Draw border edges where terrain type changes between adjacent tiles. */
