@@ -276,20 +276,11 @@ export function generateTerrainMap(): number[][] {
   // Row 3 (top border) and row 26 (bottom border) = walls
   // Rows 2 and 27 = holes (fall off the edge)
   for (let x = 0; x < GRID_COLS; x++) {
-    map[3][x] = Terrain.Wall;
-    map[26][x] = Terrain.Wall;
     map[2][x] = Terrain.Hole;
     map[27][x] = Terrain.Hole;
-  }
-  // Random gaps in the side walls (every 8-15 tiles, 2-3 tiles wide)
-  for (let x = 10; x < GRID_COLS - 10; x += randomInt(8, 15)) {
-    const gapW = randomInt(2, 3);
-    for (let dx = 0; dx < gapW; dx++) {
-      if (x + dx < GRID_COLS) {
-        map[3][x + dx] = Terrain.Normal;   // gap in top wall
-        map[26][x + dx] = Terrain.Normal;  // gap in bottom wall
-      }
-    }
+    // Outer walls — close off the sides so players can't walk past the holes
+    map[1][x] = Terrain.Wall;
+    map[28][x] = Terrain.Wall;
   }
 
   // ── Zone 1: Mud field ─────────────────────────────────────────────────

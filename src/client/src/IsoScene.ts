@@ -231,12 +231,23 @@ export class IsoScene extends Phaser.Scene {
     this.load.image('tiles_stones', '/tiles/stones.png');
     this.load.image('tiles_metal', '/tiles/metal.png');
     this.load.image('tiles_wood_src', '/tiles/wood.png');
-    // Ground background image
+    // Ground background image + edge strips
     this.load.image('ground_bg', '/tiles/ground_bg.png');
+    this.load.image('ground_edge_top', '/tiles/ground_edge_top.png');
+    this.load.image('ground_edge_bot', '/tiles/ground_edge_bot.png');
+    this.load.image('ground_edge_left', '/tiles/ground_edge_left.png');
+    this.load.image('ground_edge_right', '/tiles/ground_edge_right.png');
 
     // Object sprites
+    this.load.image('wall_barrier', '/sprites/wall_barrier.png');
+    this.load.image('wall_barrier_h', '/sprites/wall_barrier_h.png');
+    this.load.image('button_electric', '/sprites/button_electric.png');
+    this.load.image('pickup_green', '/sprites/pickup_green.png');
+    this.load.image('pickup_cyan', '/sprites/pickup_cyan.png');
+    this.load.image('pickup_orange', '/sprites/pickup_orange.png');
+    this.load.image('pickup_yellow', '/sprites/pickup_yellow.png');
+    // Legacy sprites (kept for fallback)
     this.load.spritesheet('wall_crates', '/sprites/wall_crates.png', { frameWidth: 177, frameHeight: 181 });
-    this.load.image('button_plate', '/sprites/button_plate.png');
     this.load.spritesheet('bonfire', '/sprites/bonfire.png', { frameWidth: 105, frameHeight: 137 });
     this.load.spritesheet('crate_wood', '/sprites/crates_wood.png', { frameWidth: 128, frameHeight: 128 });
   }
@@ -372,7 +383,18 @@ export class IsoScene extends Phaser.Scene {
     mask.closePath();
     mask.fillPath();
     mask.setVisible(false);
-    groundBg.setMask(mask.createGeometryMask());
+    const diamondMask = mask.createGeometryMask();
+    groundBg.setMask(diamondMask);
+
+    // Slightly larger copy behind main image to fill edge gaps
+    const groundFill = this.add.image(
+      this.originX + mapCenterTile.x,
+      this.originY + mapCenterTile.y + TILE_H / 2,
+      'ground_bg'
+    );
+    groundFill.setDisplaySize(gridW * 1.15, gridH * 1.15);
+    groundFill.setDepth(-10.5);
+    groundFill.setMask(diamondMask);
 
     this.drawTileGrid();
     this.drawFinishLine();
@@ -737,26 +759,41 @@ export class IsoScene extends Phaser.Scene {
       return null;
     }
 
-    // Wall: background shows through + crate on top
+    // Wall: stacked crates (4 variations based on position)
     if (terrain === Terrain.Wall) {
       const frame = (tx + ty) % 4;
       const wallSprite = this.add.sprite(sx, sy + TILE_H / 2, 'wall_crates', frame);
-      wallSprite.setScale(0.38);
+      wallSprite.setScale(0.342);
       wallSprite.setOrigin(0.5, 0.78);
       wallSprite.setDepth(tileDepth + 0.5);
       this.extraTileSprites.push(wallSprite);
       return wallSprite as unknown as Phaser.GameObjects.Image;
     }
 
-    // Button: background shows through + bonfire on top
+    // Button: electric plate with spark particles
     if (terrain === Terrain.Button) {
-      const frame = (tx + ty) % 4;
-      const fire = this.add.sprite(sx, sy + TILE_H, 'bonfire', frame);
-      fire.setScale(0.32);
-      fire.setOrigin(0.5, 1.0);
-      fire.setDepth(tileDepth + 0.1);
-      this.extraTileSprites.push(fire);
-      return fire as unknown as Phaser.GameObjects.Image;
+      const plate = this.add.image(sx, sy + TILE_H / 2, 'button_electric');
+      plate.setScale(0.75);
+      plate.setOrigin(0.5, 0.5);
+      plate.setDepth(tileDepth + 0.1);
+      this.extraTileSprites.push(plate);
+
+      // Electric sparkle particles
+      const sparks = this.add.particles(sx, sy + TILE_H / 2, 'particle', {
+        speed: { min: 20, max: 60 },
+        scale: { start: 0.8, end: 0 },
+        alpha: { start: 1, end: 0 },
+        lifespan: { min: 200, max: 500 },
+        frequency: 120,
+        quantity: 2,
+        tint: [0x44aaff, 0x88ccff, 0xffffff, 0x4488ff],
+        emitZone: { source: new Phaser.Geom.Circle(0, 0, 14), type: 'random' } as Phaser.Types.GameObjects.Particles.ParticleEmitterRandomZoneConfig,
+        gravityY: -25,
+      });
+      sparks.setDepth(tileDepth + 0.2);
+      this.extraTileSprites.push(sparks as unknown as Phaser.GameObjects.GameObject);
+
+      return plate;
     }
 
     // Normal terrain: background image shows through
@@ -1218,7 +1255,7 @@ export class IsoScene extends Phaser.Scene {
   // ─── Pickup & slime rendering ──────────────────────────────────────────
 
   private readonly PICKUP_COLORS: Record<number, number> = {
-    0: 0x44ff44, 1: 0x44ffff, 2: 0xaaff00, 3: 0xff6644,
+    0: 0xffdd44, 1: 0x44ffff, 2: 0x44ff44, 3: 0xff6644,
   };
 
   private pickupSprites: Phaser.GameObjects.Image[] = [];
@@ -1262,11 +1299,11 @@ export class IsoScene extends Phaser.Scene {
     this.pickupSprites = [];
     this.pickupGfx.clear();
 
-    const PICKUP_CRATE: Record<number, { frame: number; tint: number }> = {
-      0: { frame: 0, tint: 0x44ff44 },  // Speed — green
-      1: { frame: 6, tint: 0x44ffff },  // Shield — cyan
-      2: { frame: 12, tint: 0xaaff00 }, // Slime — lime
-      3: { frame: 18, tint: 0xff6644 }, // Knockback — red
+    const PICKUP_TEXTURE: Record<number, string> = {
+      0: 'pickup_yellow',  // Speed
+      1: 'pickup_cyan',    // Shield
+      2: 'pickup_green',   // Slime
+      3: 'pickup_orange',  // Knockback
     };
 
     for (const p of this.pickups) {
@@ -1274,10 +1311,9 @@ export class IsoScene extends Phaser.Scene {
       const { x, y } = tileToScreen(p.x, p.y);
       const sx = this.originX + x;
       const sy = this.originY + y;
-      const cfg = PICKUP_CRATE[p.type] ?? { frame: 0, tint: 0xffffff };
-      const crate = this.add.image(sx, sy, 'crate_wood', cfg.frame);
-      crate.setScale(0.36);
-      crate.setTint(cfg.tint);
+      const textureKey = PICKUP_TEXTURE[p.type] ?? 'pickup_green';
+      const crate = this.add.image(sx, sy, textureKey);
+      crate.setScale(0.84);
       crate.setDepth(isoDepth(p.x, p.y) + 0.05);
       this.pickupSprites.push(crate);
 

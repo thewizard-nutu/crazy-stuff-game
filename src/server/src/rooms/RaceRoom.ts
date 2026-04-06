@@ -748,6 +748,8 @@ export class RaceRoom extends Room<RaceState> {
         break;
       case PickupType.Shield:
         ps.shieldActive = true;
+        // Shield expires after 8 seconds if not consumed
+        setTimeout(() => { if (ps.shieldActive) { ps.shieldActive = false; this.broadcastState(); } }, 4000);
         break;
       case PickupType.SlimeBomb:
         this.activateSlimeBomb(sessionId, slot);
