@@ -157,7 +157,8 @@ export class IsoScene extends Phaser.Scene {
   // ─── Race phase HUD ─────────────────────────────────────────────────────
   private currentPhase: number = RacePhase.Waiting;
   private phaseText!: Phaser.GameObjects.Text;
-  private resultsText!: Phaser.GameObjects.Text;
+  private resultsContainer: HTMLDivElement | null = null;
+  private rematchBtn: HTMLButtonElement | null = null;
   private timerText!: Phaser.GameObjects.Text;
   private announceText!: Phaser.GameObjects.Text;
   private announceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -422,6 +423,9 @@ export class IsoScene extends Phaser.Scene {
 
     // Clear announcement timer
     if (this.announceTimer) { clearTimeout(this.announceTimer); this.announceTimer = null; }
+
+    // Remove results DOM overlay
+    this.destroyResultsContainer();
 
     // Destroy infinite pickup tweens
     for (const t of this.pickupTweens) t.destroy();
@@ -1471,6 +1475,10 @@ export class IsoScene extends Phaser.Scene {
       this.showResults(data.results);
     });
 
+    room.onMessage('rematchVoteUpdate', (data: { votes: number; needed: number }) => {
+      this.updateRematchVoteStatus(data.votes, data.needed);
+    });
+
     room.onMessage('crumbleWarning', (data: { tileX: number; tileY: number }) => {
       this.crumbleWarnings.set(`${data.tileX},${data.tileY}`, performance.now());
       this.sfxCrumble();
@@ -1585,7 +1593,7 @@ export class IsoScene extends Phaser.Scene {
   }
 
   private handleRaceReset(): void {
-    this.resultsText.setVisible(false);
+    this.destroyResultsContainer();
     this.timerText.setVisible(false);
     this.announceText.setVisible(false);
     if (this.announceTimer) { clearTimeout(this.announceTimer); this.announceTimer = null; }
@@ -1643,12 +1651,7 @@ export class IsoScene extends Phaser.Scene {
       })
       .setOrigin(0.5, 0).setScrollFactor(0).setDepth(9999).setVisible(false);
 
-    this.resultsText = this.add
-      .text(width / 2, height / 2, '', {
-        fontSize: '16px', color: '#ffffff', backgroundColor: '#000000dd',
-        padding: { x: 24, y: 18 }, align: 'left', lineSpacing: 6,
-      })
-      .setOrigin(0.5, 0.5).setScrollFactor(0).setDepth(10000).setVisible(false);
+    // Results overlay is a DOM element (created on demand by showResults)
   }
 
   private updatePhaseHud(phase: number, countdown: number, finishCountdown?: number): void {
@@ -1669,20 +1672,79 @@ export class IsoScene extends Phaser.Scene {
         }
         break;
       case RacePhase.Finished:
-        this.phaseText.setText('Race Over — Restarting...').setColor('#ff6666');
+        this.phaseText.setText('Race Over — Vote to Rematch!').setColor('#ff6666');
         break;
     }
   }
 
   private showResults(results: RaceResult[]): void {
-    const lines: string[] = ['=== RACE RESULTS ===', ''];
+    this.destroyResultsContainer();
+
+    const container = document.createElement('div');
+    container.style.cssText = `
+      position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%);
+      background: rgba(0,0,0,0.88); color: #fff; font-family: monospace;
+      padding: 24px 32px; border-radius: 8px; z-index: 10000;
+      min-width: 320px; text-align: center; pointer-events: auto;
+    `;
+
+    const title = document.createElement('div');
+    title.textContent = '=== RACE RESULTS ===';
+    title.style.cssText = 'font-size:18px; font-weight:bold; margin-bottom:12px;';
+    container.appendChild(title);
+
     for (const r of results) {
       const pos = r.position > 0 ? `#${r.position}` : 'DNF';
       const time = r.position > 0 ? `${r.timeSeconds.toFixed(2)}s` : '---';
       const bonus = r.bonusPoints > 0 ? ` (+${r.bonusPoints} bonus)` : '';
-      lines.push(`${pos}  ${r.playerName}  ${time}  ${r.totalScore}pts${bonus}`);
+      const row = document.createElement('div');
+      row.textContent = `${pos}  ${r.playerName}  ${time}  ${r.totalScore}pts${bonus}`;
+      row.style.cssText = 'font-size:14px; margin:4px 0; white-space:pre;';
+      container.appendChild(row);
     }
-    this.resultsText.setText(lines.join('\n')).setVisible(true);
+
+    const voteStatus = document.createElement('div');
+    voteStatus.id = 'rematch-vote-status';
+    voteStatus.style.cssText = 'font-size:13px; color:#aaa; margin-top:14px;';
+    voteStatus.textContent = '';
+    container.appendChild(voteStatus);
+
+    const btn = document.createElement('button');
+    btn.textContent = 'Rematch!';
+    btn.style.cssText = `
+      margin-top: 16px; padding: 10px 32px; font-size: 16px; font-weight: bold;
+      background: #44bb44; color: #fff; border: none; border-radius: 6px;
+      cursor: pointer; font-family: monospace;
+    `;
+    btn.addEventListener('mouseenter', () => { btn.style.background = '#55cc55'; });
+    btn.addEventListener('mouseleave', () => {
+      if (!btn.disabled) btn.style.background = '#44bb44';
+    });
+    btn.addEventListener('click', () => {
+      if (this.room) this.room.send('rematchVote', {});
+      btn.textContent = 'Waiting for others...';
+      btn.disabled = true;
+      btn.style.background = '#666';
+      btn.style.cursor = 'default';
+    });
+    container.appendChild(btn);
+    this.rematchBtn = btn;
+
+    document.body.appendChild(container);
+    this.resultsContainer = container;
+  }
+
+  private destroyResultsContainer(): void {
+    if (this.resultsContainer) {
+      this.resultsContainer.remove();
+      this.resultsContainer = null;
+      this.rematchBtn = null;
+    }
+  }
+
+  private updateRematchVoteStatus(votes: number, needed: number): void {
+    const el = document.getElementById('rematch-vote-status');
+    if (el) el.textContent = `Rematch votes: ${votes} / ${needed}`;
   }
 
   // ─── Particles ─────────────────────────────────────────────────────────

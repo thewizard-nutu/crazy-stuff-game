@@ -133,6 +133,7 @@ export const MIN_PLAYERS_TO_START    = 2;
 export const COUNTDOWN_SECONDS      = 3;
 export const FINISH_COUNTDOWN_SECONDS = 10;
 export const RESET_DELAY_MS         = 5000;
+export const REMATCH_VOTE_TIMEOUT_MS = 15000;
 
 // ─── Scoring ─────────────────────────────────────────────────────────────────
 

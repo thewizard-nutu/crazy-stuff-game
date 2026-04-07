@@ -4,7 +4,7 @@ import {
   Terrain, generateTerrainMap, generateButtons, generatePickups,
   GRID_COL_MAX, GRID_ROW_MAX, SPAWN_X, SPAWN_Y,
   RacePhase, FINISH_X, FINISH_Y_MIN, FINISH_Y_MAX,
-  MIN_PLAYERS_TO_START, COUNTDOWN_SECONDS, FINISH_COUNTDOWN_SECONDS, RESET_DELAY_MS,
+  MIN_PLAYERS_TO_START, COUNTDOWN_SECONDS, FINISH_COUNTDOWN_SECONDS,
   ButtonType, BUTTON_COOLDOWN_MS,
   PickupType, PICKUP_SPEED_COOLDOWN, PICKUP_SPEED_DURATION,
   SLIME_SIZE, SLIME_PERSIST_MS, SLIME_STUCK_MS,
@@ -14,6 +14,7 @@ import {
   POSITION_POINTS, DNF_POINTS,
   BONUS_BUTTON_ACTIVATED, BONUS_FAST_FINISH, BONUS_GOOD_FINISH,
   FAST_FINISH_THRESHOLD, GOOD_FINISH_THRESHOLD,
+  REMATCH_VOTE_TIMEOUT_MS,
   type ButtonDef, type PickupDef, type RaceResult,
 } from '../../../shared/terrain';
 
@@ -147,6 +148,7 @@ export class RaceRoom extends Room<RaceState> {
   private activeEffects = new Map<number, {
     original: Map<string, number>;
     timer: ReturnType<typeof setTimeout>;
+    activatorId: string;
   }>();
 
   // Pickups
@@ -162,13 +164,16 @@ export class RaceRoom extends Room<RaceState> {
   private phase: number = RacePhase.Waiting;
   private countdown = 0;
   private countdownTimer: ReturnType<typeof setInterval> | null = null;
-  private resetTimer: ReturnType<typeof setTimeout> | null = null;
   private startTime = 0;
 
   // Finish tracking
   private finishOrder: FinishRecord[] = [];
   private finishCountdown = 0;
   private finishCountdownTimer: ReturnType<typeof setInterval> | null = null;
+
+  // Rematch vote
+  private rematchVotes = new Set<string>();
+  private rematchTimer: ReturnType<typeof setTimeout> | null = null;
 
   onCreate(): void {
     this.setState(new RaceState());
@@ -186,6 +191,10 @@ export class RaceRoom extends Room<RaceState> {
 
     this.onMessage('jump', (client) => {
       this.handleJump(client.sessionId);
+    });
+
+    this.onMessage('rematchVote', (client) => {
+      this.handleRematchVote(client.sessionId);
     });
 
     console.log(`[RaceRoom] created — ${this.buttons.length} buttons, ${this.pickups.length} pickups`);
@@ -252,12 +261,22 @@ export class RaceRoom extends Room<RaceState> {
     if (this.phase === RacePhase.Racing && this.finishCountdown > 0) {
       this.checkAllFinished();
     }
+    // Recheck rematch majority when a player leaves during vote
+    if (this.phase === RacePhase.Finished) {
+      this.rematchVotes.delete(client.sessionId);
+      const needed = this.rematchMajority();
+      this.broadcast('rematchVoteUpdate', { votes: this.rematchVotes.size, needed });
+      if (this.rematchVotes.size >= needed && needed > 0) {
+        if (this.rematchTimer) { clearTimeout(this.rematchTimer); this.rematchTimer = null; }
+        this.resetRace();
+      }
+    }
   }
 
   onDispose(): void {
     if (this.countdownTimer) clearInterval(this.countdownTimer);
     if (this.finishCountdownTimer) clearInterval(this.finishCountdownTimer);
-    if (this.resetTimer) clearTimeout(this.resetTimer);
+    if (this.rematchTimer) clearTimeout(this.rematchTimer);
     for (const timer of this.crumbleTimers.values()) clearTimeout(timer);
     for (const e of this.activeEffects.values()) clearTimeout(e.timer);
     for (const sz of this.slimeZones) clearTimeout(sz.timer);
@@ -387,11 +406,35 @@ export class RaceRoom extends Room<RaceState> {
 
     this.broadcast('raceResults', { results });
     this.broadcastState();
-    this.scheduleReset();
+    this.startRematchVoteTimer();
   }
 
-  private scheduleReset(): void {
-    this.resetTimer = setTimeout(() => { this.resetTimer = null; this.resetRace(); }, RESET_DELAY_MS);
+  /** Start the rematch vote window. Auto-resets after timeout if no majority. */
+  private startRematchVoteTimer(): void {
+    this.rematchVotes.clear();
+    this.broadcast('rematchVoteUpdate', { votes: 0, needed: this.rematchMajority() });
+    this.rematchTimer = setTimeout(() => {
+      this.rematchTimer = null;
+      this.resetRace();
+    }, REMATCH_VOTE_TIMEOUT_MS);
+  }
+
+  private rematchMajority(): number {
+    return Math.ceil(this.occupiedCount() / 2);
+  }
+
+  private handleRematchVote(sessionId: string): void {
+    if (this.phase !== RacePhase.Finished) return;
+    this.rematchVotes.add(sessionId);
+    const needed = this.rematchMajority();
+    this.broadcast('rematchVoteUpdate', {
+      votes: this.rematchVotes.size,
+      needed,
+    });
+    if (this.rematchVotes.size >= needed) {
+      if (this.rematchTimer) { clearTimeout(this.rematchTimer); this.rematchTimer = null; }
+      this.resetRace();
+    }
   }
 
   private resetRace(): void {
@@ -428,6 +471,8 @@ export class RaceRoom extends Room<RaceState> {
     this.finishCountdown = 0;
     this.finishOrder = [];
     this.startTime = 0;
+    this.rematchVotes.clear();
+    if (this.rematchTimer) { clearTimeout(this.rematchTimer); this.rematchTimer = null; }
     this.broadcastState();
     this.checkStartCondition();
   }
@@ -911,7 +956,7 @@ export class RaceRoom extends Room<RaceState> {
     this.broadcast('buttonActivated', { id: btn.id, type: btn.type });
 
     const timer = setTimeout(() => this.revertButtonEffect(btn.id, original), BUTTON_COOLDOWN_MS);
-    this.activeEffects.set(btn.id, { original, timer });
+    this.activeEffects.set(btn.id, { original, timer, activatorId });
 
     const ps = this.players.get(activatorId);
     if (ps) ps.buttonsActivated++;
