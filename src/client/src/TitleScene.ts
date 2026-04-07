@@ -240,7 +240,7 @@ export class TitleScene extends Phaser.Scene {
     this.cameras.main.flash(400, 255, 220, 50);
 
     this.time.delayedCall(500, () => {
-      this.scene.start('IsoScene', { authState: this.authState, bgMusic: this.bgMusic });
+      this.scene.start('LobbyScene', { authState: this.authState, bgMusic: this.bgMusic });
     });
   }
 
