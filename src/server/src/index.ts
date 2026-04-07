@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import http from 'http';
 import path from 'path';
 import express from 'express';
@@ -16,6 +17,18 @@ app.use(express.static(clientDist));
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });
+});
+
+// Player profile API
+app.get('/api/player/:authId', async (req, res) => {
+  try {
+    const { getPlayer } = await import('./db/supabase');
+    const player = await getPlayer(req.params.authId);
+    if (!player) return res.status(404).json({ error: 'not found' });
+    res.json(player);
+  } catch (e) {
+    res.status(500).json({ error: 'db error' });
+  }
 });
 
 // SPA fallback — serve index.html for any non-API route

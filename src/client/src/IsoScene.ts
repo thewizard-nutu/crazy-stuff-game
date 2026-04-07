@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { authenticate, type AuthState } from './auth';
 import {
   Terrain, GRID_COLS, GRID_ROWS, RacePhase,
   FINISH_X, FINISH_Y_MIN, FINISH_Y_MAX, SPAWN_X, SPAWN_Y,
@@ -139,6 +140,7 @@ export class IsoScene extends Phaser.Scene {
   private mySessionId = '';
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private room: any = null;
+  private authState: AuthState | null = null;
 
   private playerFacing = 'SD';
 
@@ -418,6 +420,9 @@ export class IsoScene extends Phaser.Scene {
 
   /** Destroy all scene resources to prevent memory leaks. */
   private cleanupScene(): void {
+    // Remove DOM elements
+    if (this.profileHud) { this.profileHud.remove(); this.profileHud = null; }
+
     // Leave multiplayer room
     if (this.room) { this.room.leave(); this.room = null; }
 
@@ -1382,8 +1387,14 @@ export class IsoScene extends Phaser.Scene {
   // ─── Network ───────────────────────────────────────────────────────────
 
   private async connectToRace(): Promise<void> {
-    const raw = window.prompt('Enter your name (max 20 characters, letters & numbers only):', '')?.trim() || 'Player';
-    const name = raw.replace(/[^a-zA-Z0-9 ]/g, '').slice(0, 20).trim() || 'Player';
+    // Authenticate — login or register required
+    this.authState = await authenticate();
+    const name = this.authState.username;
+
+    // Fetch and show player profile HUD
+    if (this.authState.session) {
+      this.createProfileHud(this.authState.session.user.id);
+    }
 
     const { Client } = await import('colyseus.js');
     // Dynamic WebSocket URL — works on localhost, LAN, tunnels, and production
@@ -1394,9 +1405,26 @@ export class IsoScene extends Phaser.Scene {
     const wsPort = (port === '8080' || port === '5173') ? '3000' : port;
     const wsUrl = `${protocol}//${host}:${wsPort}`;
     const client = new Client(wsUrl);
-    const room = await client.joinOrCreate('race', { playerName: name });
+    const authId = this.authState?.session?.user?.id;
+    let room;
+    try {
+      room = await client.joinOrCreate('race', { playerName: name, authId });
+    } catch (e) {
+      alert('Could not join the game. It may already be open in another tab.');
+      return;
+    }
     this.room = room;
     this.mySessionId = room.sessionId;
+
+    room.onMessage('error', (data: { message: string }) => {
+      alert(data.message);
+    });
+
+    room.onLeave((code: number) => {
+      if (code >= 4000) {
+        alert('Disconnected: You may already be playing in another tab.');
+      }
+    });
 
     room.onMessage('mapData', (data: { map: number[][]; buttons: ButtonDef[]; pickups: PickupDef[] }) => {
       this.localTerrain = data.map;
@@ -1473,6 +1501,7 @@ export class IsoScene extends Phaser.Scene {
 
     room.onMessage('raceResults', (data: { results: RaceResult[] }) => {
       this.showResults(data.results);
+      this.refreshProfileHud();
     });
 
     room.onMessage('rematchVoteUpdate', (data: { votes: number; needed: number }) => {
@@ -1615,6 +1644,48 @@ export class IsoScene extends Phaser.Scene {
   }
 
   // ─── HUD ───────────────────────────────────────────────────────────────
+
+  private profileHud: HTMLDivElement | null = null;
+
+  private async createProfileHud(authId: string): Promise<void> {
+    try {
+      const protocol = window.location.protocol;
+      const host = window.location.hostname;
+      const port = window.location.port || (protocol === 'https:' ? '443' : '80');
+      const apiPort = (port === '8080' || port === '5173') ? '3000' : port;
+      const resp = await fetch(`${protocol}//${host}:${apiPort}/api/player/${authId}`);
+      if (!resp.ok) return;
+      const player = await resp.json();
+      this.renderProfileHud(player);
+    } catch {
+      // DB not available, skip
+    }
+  }
+
+  private renderProfileHud(player: { username: string; level: number; xp: number; coins: number }): void {
+    if (this.profileHud) this.profileHud.remove();
+
+    const hud = document.createElement('div');
+    hud.id = 'profile-hud';
+    hud.style.cssText = `
+      position: fixed; top: 10px; right: 10px; z-index: 5000;
+      background: rgba(0,0,0,0.7); border: 1px solid #444; border-radius: 6px;
+      padding: 8px 14px; font-family: monospace; color: #eee; font-size: 13px;
+      pointer-events: none;
+    `;
+    hud.innerHTML = `
+      <div style="font-weight: bold; color: #ffdd44; margin-bottom: 4px;">Lv.${player.level} ${player.username}</div>
+      <div style="font-size: 11px; color: #aaa;">XP: ${player.xp} &nbsp; Coins: ${player.coins}</div>
+    `;
+    document.body.appendChild(hud);
+    this.profileHud = hud;
+  }
+
+  /** Refresh profile HUD after a race (XP/coins updated). */
+  private async refreshProfileHud(): Promise<void> {
+    const authId = this.authState?.session?.user?.id;
+    if (authId) await this.createProfileHud(authId);
+  }
 
   private addHud(): void {
     this.add

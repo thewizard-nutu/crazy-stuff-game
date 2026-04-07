@@ -139,6 +139,7 @@ export class RaceRoom extends Room<RaceState> {
   maxClients = 5;
 
   private players = new Map<string, PlayerState>();
+  private authIds = new Map<string, string>(); // sessionId → authId
   private terrainGrid: number[][] = [];
   private crumbleTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -207,7 +208,18 @@ export class RaceRoom extends Room<RaceState> {
     this.collectedPickups.clear();
   }
 
-  onJoin(client: Client, options: { playerName?: string }): void {
+  onJoin(client: Client, options: { playerName?: string; authId?: string }): void {
+    // Prevent duplicate sessions from the same auth account
+    if (options?.authId) {
+      for (const [sid, aid] of this.authIds) {
+        if (aid === options.authId) {
+          client.send('error', { message: 'Already in this room from another tab' });
+          client.leave();
+          return;
+        }
+      }
+    }
+
     const slot = this.state.slots.find(s => !s.occupied);
     if (!slot) { client.leave(); return; }
 
@@ -217,6 +229,7 @@ export class RaceRoom extends Room<RaceState> {
     slot.sessionId = client.sessionId;
     const rawName = (options?.playerName ?? 'Player').replace(/[^a-zA-Z0-9 ]/g, '').slice(0, 20).trim();
     slot.playerName = rawName || 'Player';
+    if (options?.authId) this.authIds.set(client.sessionId, options.authId);
     slot.tileX = SPAWN_X;
     slot.tileY = spawnY;
     slot.occupied = true;
@@ -407,9 +420,29 @@ export class RaceRoom extends Room<RaceState> {
     this.broadcast('raceResults', { results });
     this.broadcastState();
     this.startRematchVoteTimer();
+
+    // Award XP and coins to authenticated players
+    this.awardPlayers(results).catch(e => console.error('[RaceRoom] award error:', e));
   }
 
   /** Start the rematch vote window. Auto-resets after timeout if no majority. */
+  private async awardPlayers(results: RaceResult[]): Promise<void> {
+    try {
+      const { awardPostRace, getOrCreatePlayer } = await import('./db/supabase');
+      for (const r of results) {
+        const authId = this.authIds.get(r.sessionId);
+        if (!authId) continue; // guest player, skip
+        await getOrCreatePlayer(authId, r.playerName);
+        const xp = r.totalScore;
+        const coins = Math.floor(r.totalScore / 2);
+        await awardPostRace(authId, xp, coins, r.position === 1);
+        console.log(`[RaceRoom] awarded ${r.playerName}: ${xp}xp, ${coins}coins`);
+      }
+    } catch (e) {
+      console.error('[RaceRoom] DB not available, skipping awards:', e);
+    }
+  }
+
   private startRematchVoteTimer(): void {
     this.rematchVotes.clear();
     this.broadcast('rematchVoteUpdate', { votes: 0, needed: this.rematchMajority() });

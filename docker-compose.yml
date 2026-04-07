@@ -6,4 +6,28 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3000
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-crazy}:${POSTGRES_PASSWORD:-crazy}@db:5432/${POSTGRES_DB:-crazydb}
+    depends_on:
+      db:
+        condition: service_healthy
     restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-crazy}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-crazy}
+      - POSTGRES_DB=${POSTGRES_DB:-crazydb}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-crazy}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  pgdata:
