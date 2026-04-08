@@ -18,6 +18,7 @@ export async function connectDB(): Promise<Db> {
 
   // Create indexes
   await db.collection('users').createIndex({ email: 1 }, { unique: true });
+  await db.collection('users').createIndex({ username: 1 }, { unique: true });
   await db.collection('users').createIndex({ googleSub: 1 }, { sparse: true });
   await db.collection('players').createIndex({ userId: 1 }, { unique: true });
   await db.collection('inventory').createIndex({ playerId: 1 });
@@ -46,6 +47,10 @@ const STARTER_ITEMS = [
 
 export async function findUserByEmail(email: string) {
   return db.collection('users').findOne({ email: email.toLowerCase() });
+}
+
+export async function findUserByUsername(username: string) {
+  return db.collection('users').findOne({ username });
 }
 
 export async function findUserByGoogleSub(googleSub: string) {

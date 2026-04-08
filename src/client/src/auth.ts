@@ -160,12 +160,13 @@ export async function authenticate(): Promise<AuthState> {
         <div id="auth-error" style="color: #ff4444; font-size: 12px; margin-bottom: 12px; display: none;"></div>
         <input id="auth-username" type="text" placeholder="Username" maxlength="20"
           style="width: 100%; padding: 10px; margin-bottom: 10px; background: #222; border: 1px solid #555; color: #fff; border-radius: 4px; box-sizing: border-box; font-family: monospace;" />
-        <input id="auth-email" type="email" placeholder="Email"
-          style="width: 100%; padding: 10px; margin-bottom: 10px; background: #222; border: 1px solid #555; color: #fff; border-radius: 4px; box-sizing: border-box; font-family: monospace;" />
+        <input id="auth-email" type="email" placeholder="Email (for registration only)"
+          style="width: 100%; padding: 10px; margin-bottom: 10px; background: #222; border: 1px solid #555; color: #fff; border-radius: 4px; box-sizing: border-box; font-family: monospace; display: none;" />
         <input id="auth-password" type="password" placeholder="Password"
           style="width: 100%; padding: 10px; margin-bottom: 16px; background: #222; border: 1px solid #555; color: #fff; border-radius: 4px; box-sizing: border-box; font-family: monospace;" />
         <button id="auth-login" style="width: 48%; padding: 10px; background: #4488ff; border: none; color: #fff; border-radius: 4px; cursor: pointer; font-family: monospace; font-weight: bold;">LOGIN</button>
         <button id="auth-register" style="width: 48%; padding: 10px; background: #44bb44; border: none; color: #fff; border-radius: 4px; cursor: pointer; font-family: monospace; font-weight: bold; float: right;">REGISTER</button>
+        <p id="auth-toggle" style="text-align: center; margin: 12px 0 0; font-size: 12px; color: #4488ff; cursor: pointer; text-decoration: underline;">Need an account? Show registration fields</p>
         <div style="text-align: center; margin: 16px 0 0; border-top: 1px solid #333; padding-top: 12px;">
           <button id="auth-google" style="width: 100%; padding: 10px; background: #fff; border: none; color: #333; border-radius: 4px; cursor: pointer; font-family: monospace; font-weight: bold;">
             Sign in with Google
@@ -202,13 +203,22 @@ export async function authenticate(): Promise<AuthState> {
       });
     };
 
-    // ── LOGIN ──
-    document.getElementById('auth-login')!.onclick = async () => {
-      const email = emailInput.value.trim();
-      const password = passwordInput.value;
-      if (!email || !password) { showError('Email and password required'); return; }
+    // ── Toggle registration fields ──
+    let registerMode = false;
+    document.getElementById('auth-toggle')!.onclick = () => {
+      registerMode = !registerMode;
+      emailInput.style.display = registerMode ? 'block' : 'none';
+      (document.getElementById('auth-toggle') as HTMLElement).textContent =
+        registerMode ? 'Already have an account? Hide email field' : 'Need an account? Show registration fields';
+    };
 
-      const result = await apiPost('/auth/login', { email, password });
+    // ── LOGIN (username + password) ──
+    document.getElementById('auth-login')!.onclick = async () => {
+      const username = cleanName(usernameInput.value);
+      const password = passwordInput.value;
+      if (!username || !password) { showError('Username and password required'); return; }
+
+      const result = await apiPost('/auth/login', { username, password });
       if (!result.ok) { showError(result.error!); return; }
       finish(result.data.token, result.data.user);
     };
