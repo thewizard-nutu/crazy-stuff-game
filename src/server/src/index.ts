@@ -85,12 +85,17 @@ app.post('/api/player/:authId/equip', async (req, res) => {
   try {
     const { inventoryItemId, equipped } = req.body;
     if (!inventoryItemId) return res.status(400).json({ error: 'inventoryItemId required' });
-    const { supabase } = await import('./db/supabase');
-    const { error } = await supabase
-      .from('inventory')
-      .update({ equipped: !!equipped })
-      .eq('id', inventoryItemId);
-    if (error) return res.status(500).json({ error: error.message });
+
+    if (equipped) {
+      const { equipItem } = await import('./db/supabase');
+      const result = await equipItem(req.params.authId, inventoryItemId);
+      if (!result) return res.status(400).json({ error: 'could not equip item' });
+    } else {
+      const { unequipItem } = await import('./db/supabase');
+      const result = await unequipItem(req.params.authId, inventoryItemId);
+      if (!result) return res.status(400).json({ error: 'could not unequip item' });
+    }
+
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: 'db error' });

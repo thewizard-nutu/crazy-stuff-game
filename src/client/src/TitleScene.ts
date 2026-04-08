@@ -39,7 +39,7 @@ export class TitleScene extends Phaser.Scene {
     this.authState = await authenticate();
 
     // Start music after auth (user gesture from login click unlocks audio)
-    this.bgMusic = this.sound.add('title_theme', { loop: true, volume: 0.6 });
+    this.bgMusic = this.sound.add('title_theme', { loop: true, volume: 0.5 });
     try { this.bgMusic.play(); } catch { /* ignore */ }
 
     // Phase 1: Draw thick pipe frames + fireworks

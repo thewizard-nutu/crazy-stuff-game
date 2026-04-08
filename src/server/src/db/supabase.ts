@@ -145,3 +145,84 @@ export async function addItem(authId: string, itemType: string, itemId: string, 
   if (error) console.error('[DB] Failed to add item:', error);
   return data;
 }
+
+/** Valid equipment slot types. */
+export const EQUIPMENT_SLOTS = [
+  'eyes_accessory', 'mouth_accessory', 'face_accessory',
+  'upper_body', 'lower_body', 'head_accessory',
+  'air_space', 'hand_1h', 'skin', 'hair', 'back', 'feet',
+] as const;
+
+export type EquipmentSlot = typeof EQUIPMENT_SLOTS[number];
+
+/**
+ * Equip an inventory item. Unequips any other item in the same item_type slot first.
+ * Returns the updated inventory list on success, null on failure.
+ */
+export async function equipItem(authId: string, inventoryItemId: string) {
+  const { data: player } = await supabase
+    .from('players')
+    .select('id')
+    .eq('auth_id', authId)
+    .single();
+
+  if (!player) return null;
+
+  // Fetch the item being equipped to get its item_type
+  const { data: item } = await supabase
+    .from('inventory')
+    .select('id, item_type')
+    .eq('id', inventoryItemId)
+    .eq('player_id', player.id)
+    .single();
+
+  if (!item) return null;
+
+  // Unequip any currently equipped item in the same slot
+  await supabase
+    .from('inventory')
+    .update({ equipped: false })
+    .eq('player_id', player.id)
+    .eq('item_type', item.item_type)
+    .eq('equipped', true);
+
+  // Equip the target item
+  const { error } = await supabase
+    .from('inventory')
+    .update({ equipped: true })
+    .eq('id', inventoryItemId)
+    .eq('player_id', player.id);
+
+  if (error) {
+    console.error('[DB] Failed to equip item:', error);
+    return null;
+  }
+
+  return { ok: true };
+}
+
+/**
+ * Unequip an inventory item.
+ */
+export async function unequipItem(authId: string, inventoryItemId: string) {
+  const { data: player } = await supabase
+    .from('players')
+    .select('id')
+    .eq('auth_id', authId)
+    .single();
+
+  if (!player) return null;
+
+  const { error } = await supabase
+    .from('inventory')
+    .update({ equipped: false })
+    .eq('id', inventoryItemId)
+    .eq('player_id', player.id);
+
+  if (error) {
+    console.error('[DB] Failed to unequip item:', error);
+    return null;
+  }
+
+  return { ok: true };
+}
