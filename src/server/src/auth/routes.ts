@@ -9,7 +9,7 @@ import {
 const router = Router();
 
 const JWT_SECRET = process.env.JWT_SECRET ?? 'dev-secret-change-me';
-const GOOGLE_CLIENT_ID = '693892772498-hfv8rp9djr3onhaqjgp9t44tcmv8k3vp.apps.googleusercontent.com';
+const GOOGLE_CLIENT_ID = '1010797437683-acc3bke8o6qsj69370700vbfk6chbmep.apps.googleusercontent.com';
 
 interface JwtPayload {
   sub: string;
