@@ -164,9 +164,9 @@ export async function authenticate(): Promise<AuthState> {
           style="width: 100%; padding: 10px; margin-bottom: 10px; background: #222; border: 1px solid #555; color: #fff; border-radius: 4px; box-sizing: border-box; font-family: monospace; display: none;" />
         <input id="auth-password" type="password" placeholder="Password"
           style="width: 100%; padding: 10px; margin-bottom: 16px; background: #222; border: 1px solid #555; color: #fff; border-radius: 4px; box-sizing: border-box; font-family: monospace;" />
-        <button id="auth-login" style="width: 48%; padding: 10px; background: #4488ff; border: none; color: #fff; border-radius: 4px; cursor: pointer; font-family: monospace; font-weight: bold;">LOGIN</button>
-        <button id="auth-register" style="width: 48%; padding: 10px; background: #44bb44; border: none; color: #fff; border-radius: 4px; cursor: pointer; font-family: monospace; font-weight: bold; float: right;">REGISTER</button>
-        <p id="auth-toggle" style="text-align: center; margin: 12px 0 0; font-size: 12px; color: #4488ff; cursor: pointer; text-decoration: underline;">Need an account? Show registration fields</p>
+        <button id="auth-login" style="width: 100%; padding: 10px; background: #4488ff; border: none; color: #fff; border-radius: 4px; cursor: pointer; font-family: monospace; font-weight: bold;">LOGIN</button>
+        <button id="auth-register" style="width: 100%; padding: 10px; background: #44bb44; border: none; color: #fff; border-radius: 4px; cursor: pointer; font-family: monospace; font-weight: bold; display: none; margin-top: 8px;">REGISTER</button>
+        <p id="auth-toggle" style="text-align: center; margin: 12px 0 0; font-size: 12px; color: #4488ff; cursor: pointer; text-decoration: underline;">Need an account? Create here!</p>
         <div style="text-align: center; margin: 16px 0 0; border-top: 1px solid #333; padding-top: 12px;">
           <button id="auth-google" style="width: 100%; padding: 10px; background: #fff; border: none; color: #333; border-radius: 4px; cursor: pointer; font-family: monospace; font-weight: bold;">
             Sign in with Google
@@ -203,13 +203,18 @@ export async function authenticate(): Promise<AuthState> {
       });
     };
 
-    // ── Toggle registration fields ──
+    // ── Toggle login/register mode ──
     let registerMode = false;
+    const loginBtn = document.getElementById('auth-login') as HTMLButtonElement;
+    const registerBtn = document.getElementById('auth-register') as HTMLButtonElement;
+    const toggleText = document.getElementById('auth-toggle') as HTMLElement;
+
     document.getElementById('auth-toggle')!.onclick = () => {
       registerMode = !registerMode;
       emailInput.style.display = registerMode ? 'block' : 'none';
-      (document.getElementById('auth-toggle') as HTMLElement).textContent =
-        registerMode ? 'Already have an account? Hide email field' : 'Need an account? Show registration fields';
+      loginBtn.style.display = registerMode ? 'none' : 'block';
+      registerBtn.style.display = registerMode ? 'block' : 'none';
+      toggleText.textContent = registerMode ? 'Already have an account?' : 'Need an account? Create here!';
     };
 
     // ── LOGIN (username + password) ──
