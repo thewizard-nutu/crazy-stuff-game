@@ -771,11 +771,11 @@ export class LobbyScene extends Phaser.Scene {
           </div>
           <div style="background: #222; border-radius: 4px; padding: 10px; text-align: center;">
             <div style="color: #888; font-size: 11px;">Races</div>
-            <div style="color: #eee; font-weight: bold;">${p.total_races ?? 0}</div>
+            <div style="color: #eee; font-weight: bold;">${p.totalRaces ?? 0}</div>
           </div>
           <div style="background: #222; border-radius: 4px; padding: 10px; text-align: center;">
             <div style="color: #888; font-size: 11px;">Wins</div>
-            <div style="color: #44bb44; font-weight: bold;">${p.total_wins ?? 0}</div>
+            <div style="color: #44bb44; font-weight: bold;">${p.totalWins ?? 0}</div>
           </div>
         </div>
       `;

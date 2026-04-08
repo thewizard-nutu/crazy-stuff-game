@@ -1,6 +1,6 @@
 import { Room, Client } from 'colyseus';
 import { Schema, ArraySchema, type } from '@colyseus/schema';
-import { awardPostRace, getOrCreatePlayer } from '../db/supabase';
+import { awardPostRace, getOrCreatePlayer } from '../db/mongo';
 import {
   Terrain, generateTerrainMap, generateButtons, generatePickups,
   GRID_COL_MAX, GRID_ROW_MAX, SPAWN_X, SPAWN_Y,

@@ -1,6 +1,5 @@
 import dotenv from 'dotenv';
 import path from 'path';
-// Try multiple possible .env locations
 dotenv.config({ path: path.resolve(process.cwd(), '.env') });
 dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
 import http from 'http';
@@ -10,12 +9,21 @@ import { Server } from 'colyseus';
 import { LobbyRoom } from './rooms/LobbyRoom';
 import { QueueRoom } from './rooms/QueueRoom';
 import { RaceRoom } from './rooms/RaceRoom';
+import { authRouter } from './auth/routes';
+import { connectDB } from './db/mongo';
+import {
+  getOrCreatePlayer, getPlayer, getEquippedChar, equipChar,
+  getInventory, equipItem, unequipItem,
+} from './db/mongo';
 
 const app = express();
 const PORT = Number(process.env.PORT ?? 3000);
 
 app.use(cors());
 app.use(express.json());
+
+// Auth routes
+app.use('/auth', authRouter);
 
 // Serve the built client (production mode)
 const clientDist = path.resolve(__dirname, '../../client/dist');
@@ -25,18 +33,12 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });
 });
 
-// Player profile API — creates player record on first access
-app.get('/api/player/:authId', async (req, res) => {
+// Player profile API
+app.get('/api/player/:userId', async (req, res) => {
   try {
-    const { getOrCreatePlayer } = await import('./db/supabase');
     const username = (req.query.username as string) || 'Player';
-    console.log(`[API] GET /api/player/${req.params.authId} username=${username}`);
-    const player = await getOrCreatePlayer(req.params.authId, username);
-    if (!player) {
-      console.log('[API] player not found/created');
-      return res.status(404).json({ error: 'not found' });
-    }
-    console.log('[API] player:', player.username, 'level:', player.level);
+    const player = await getOrCreatePlayer(req.params.userId, username);
+    if (!player) return res.status(404).json({ error: 'not found' });
     res.json(player);
   } catch (e) {
     console.error('[API] player error:', e);
@@ -45,24 +47,22 @@ app.get('/api/player/:authId', async (req, res) => {
 });
 
 // Equipped character API
-app.get('/api/player/:authId/equipped-char', async (req, res) => {
+app.get('/api/player/:userId/equipped-char', async (req, res) => {
   try {
-    const { getEquippedChar } = await import('./db/supabase');
-    const charKey = await getEquippedChar(req.params.authId);
+    const charKey = await getEquippedChar(req.params.userId);
     res.json({ charKey });
   } catch (e) {
     res.status(500).json({ error: 'db error' });
   }
 });
 
-app.post('/api/player/:authId/equip-char', async (req, res) => {
+app.post('/api/player/:userId/equip-char', async (req, res) => {
   try {
     const { charKey } = req.body;
     if (!charKey || typeof charKey !== 'string') {
       return res.status(400).json({ error: 'charKey required' });
     }
-    const { equipChar } = await import('./db/supabase');
-    const result = await equipChar(req.params.authId, charKey);
+    const result = await equipChar(req.params.userId, charKey);
     if (!result) return res.status(400).json({ error: 'invalid charKey' });
     res.json({ charKey: result });
   } catch (e) {
@@ -71,28 +71,25 @@ app.post('/api/player/:authId/equip-char', async (req, res) => {
 });
 
 // Inventory API
-app.get('/api/player/:authId/inventory', async (req, res) => {
+app.get('/api/player/:userId/inventory', async (req, res) => {
   try {
-    const { getInventory } = await import('./db/supabase');
-    const items = await getInventory(req.params.authId);
+    const items = await getInventory(req.params.userId);
     res.json(items);
   } catch (e) {
     res.status(500).json({ error: 'db error' });
   }
 });
 
-app.post('/api/player/:authId/equip', async (req, res) => {
+app.post('/api/player/:userId/equip', async (req, res) => {
   try {
     const { inventoryItemId, equipped } = req.body;
     if (!inventoryItemId) return res.status(400).json({ error: 'inventoryItemId required' });
 
     if (equipped) {
-      const { equipItem } = await import('./db/supabase');
-      const result = await equipItem(req.params.authId, inventoryItemId);
+      const result = await equipItem(req.params.userId, inventoryItemId);
       if (!result) return res.status(400).json({ error: 'could not equip item' });
     } else {
-      const { unequipItem } = await import('./db/supabase');
-      const result = await unequipItem(req.params.authId, inventoryItemId);
+      const result = await unequipItem(req.params.userId, inventoryItemId);
       if (!result) return res.status(400).json({ error: 'could not unequip item' });
     }
 
@@ -102,7 +99,7 @@ app.post('/api/player/:authId/equip', async (req, res) => {
   }
 });
 
-// SPA fallback — serve index.html for any non-API route
+// SPA fallback
 app.get('*', (_req, res) => {
   res.sendFile(path.join(clientDist, 'index.html'));
 });
@@ -114,6 +111,12 @@ gameServer.define('lobby', LobbyRoom);
 gameServer.define('queue', QueueRoom);
 gameServer.define('race', RaceRoom);
 
-httpServer.listen(PORT, '0.0.0.0', () => {
-  console.log(`[server] Running on http://0.0.0.0:${PORT}`);
+// Connect to MongoDB then start server
+connectDB().then(() => {
+  httpServer.listen(PORT, '0.0.0.0', () => {
+    console.log(`[server] Running on http://0.0.0.0:${PORT}`);
+  });
+}).catch((e) => {
+  console.error('[server] Failed to connect to MongoDB:', e);
+  process.exit(1);
 });

@@ -1,91 +1,103 @@
-import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { Pool } from 'pg';
 
-const SUPABASE_URL = process.env.SUPABASE_URL ?? '';
-const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY ?? '';
+// ─── PostgreSQL connection ──────────────────────────────────────────────────
 
-if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
-  console.warn('[DB] SUPABASE_URL or SUPABASE_SERVICE_KEY not set — database features disabled');
+const DATABASE_URL = process.env.DATABASE_URL ?? '';
+
+if (!DATABASE_URL) {
+  console.warn('[DB] DATABASE_URL not set — database features disabled');
 }
 
-/** Server-side Supabase client using service role key (bypasses RLS). */
-export const supabase: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
+export const pool = new Pool({
+  connectionString: DATABASE_URL || undefined,
+  ssl: DATABASE_URL.includes('sslmode=require') ? { rejectUnauthorized: false } : undefined,
+});
 
-/** Create or get a player record by auth_id. */
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+/** Starter items seeded into every new player's inventory. */
+const STARTER_ITEMS = [
+  { item_type: 'upper_body', item_id: 'worn_tshirt', rarity: 'common' },
+  { item_type: 'lower_body', item_id: 'blue_jeans', rarity: 'common' },
+  { item_type: 'feet', item_id: 'beatup_sneakers', rarity: 'common' },
+] as const;
+
+// ─── Player CRUD ────────────────────────────────────────────────────────────
+
+/** Create or get a player record by auth_id (UUID string). */
 export async function getOrCreatePlayer(authId: string, username: string) {
   // Try to find existing player
-  const { data: existing } = await supabase
-    .from('players')
-    .select('*')
-    .eq('auth_id', authId)
-    .single();
-
-  if (existing) return existing;
+  const existing = await pool.query(
+    'SELECT * FROM players WHERE auth_id = $1 LIMIT 1',
+    [authId],
+  );
+  if (existing.rows.length > 0) return existing.rows[0];
 
   // Create new player
-  const { data: created, error } = await supabase
-    .from('players')
-    .insert({ auth_id: authId, username })
-    .select()
-    .single();
+  const created = await pool.query(
+    `INSERT INTO players (auth_id, username)
+     VALUES ($1, $2)
+     ON CONFLICT (auth_id) DO UPDATE SET auth_id = players.auth_id
+     RETURNING *`,
+    [authId, username],
+  );
 
-  if (error) {
-    console.error('[DB] Failed to create player:', error);
+  if (created.rows.length === 0) {
+    console.error('[DB] Failed to create player');
     return null;
   }
 
-  return created;
+  const player = created.rows[0];
+
+  // Seed starter inventory items
+  for (const item of STARTER_ITEMS) {
+    await pool.query(
+      `INSERT INTO inventory (player_id, item_type, item_id, rarity)
+       VALUES ($1, $2, $3, $4)`,
+      [player.id, item.item_type, item.item_id, item.rarity],
+    );
+  }
+
+  return player;
 }
 
 /** Award XP and coins after a race. */
 export async function awardPostRace(authId: string, xp: number, coins: number, won: boolean) {
-  const { data: player } = await supabase
-    .from('players')
-    .select('id, xp, coins, total_races, total_wins, level')
-    .eq('auth_id', authId)
-    .single();
+  const playerRes = await pool.query(
+    'SELECT id, xp, coins, total_races, total_wins, level FROM players WHERE auth_id = $1 LIMIT 1',
+    [authId],
+  );
 
-  if (!player) return null;
+  if (playerRes.rows.length === 0) return null;
+  const player = playerRes.rows[0];
 
   const newXp = player.xp + xp;
   const newCoins = player.coins + coins;
-  const newLevel = Math.floor(newXp / 500) + 1; // Level up every 500 XP
+  const newLevel = Math.floor(newXp / 500) + 1;
 
-  const { data: updated, error } = await supabase
-    .from('players')
-    .update({
-      xp: newXp,
-      coins: newCoins,
-      level: newLevel,
-      total_races: player.total_races + 1,
-      total_wins: player.total_wins + (won ? 1 : 0),
-      updated_at: new Date().toISOString(),
-    })
-    .eq('id', player.id)
-    .select()
-    .single();
+  const updated = await pool.query(
+    `UPDATE players SET xp = $1, coins = $2, level = $3,
+       total_races = $4, total_wins = $5, updated_at = NOW()
+     WHERE id = $6 RETURNING *`,
+    [newXp, newCoins, newLevel, player.total_races + 1, player.total_wins + (won ? 1 : 0), player.id],
+  );
 
-  if (error) console.error('[DB] Failed to award post-race:', error);
-  return updated;
+  return updated.rows[0] ?? null;
 }
 
 /** Get player profile. */
 export async function getPlayer(authId: string) {
-  const { data } = await supabase
-    .from('players')
-    .select('*')
-    .eq('auth_id', authId)
-    .single();
-  return data;
+  const res = await pool.query('SELECT * FROM players WHERE auth_id = $1 LIMIT 1', [authId]);
+  return res.rows[0] ?? null;
 }
 
 /** Get the player's equipped character key. */
 export async function getEquippedChar(authId: string): Promise<string> {
-  const { data } = await supabase
-    .from('players')
-    .select('equipped_char')
-    .eq('auth_id', authId)
-    .single();
-  return data?.equipped_char ?? 'male';
+  const res = await pool.query(
+    'SELECT equipped_char FROM players WHERE auth_id = $1 LIMIT 1',
+    [authId],
+  );
+  return res.rows[0]?.equipped_char ?? 'male';
 }
 
 /** Set the player's equipped character key. Returns the new value or null on failure. */
@@ -93,57 +105,46 @@ export async function equipChar(authId: string, charKey: string): Promise<string
   const allowed = ['male', 'female', 'male-medium', 'female-medium', 'male-dark', 'female-dark'];
   if (!allowed.includes(charKey)) return null;
 
-  const { data, error } = await supabase
-    .from('players')
-    .update({ equipped_char: charKey, updated_at: new Date().toISOString() })
-    .eq('auth_id', authId)
-    .select('equipped_char')
-    .single();
+  const res = await pool.query(
+    `UPDATE players SET equipped_char = $1, updated_at = NOW()
+     WHERE auth_id = $2 RETURNING equipped_char`,
+    [charKey, authId],
+  );
 
-  if (error) {
-    console.error('[DB] Failed to equip char:', error);
-    return null;
-  }
-  return data?.equipped_char ?? null;
+  return res.rows[0]?.equipped_char ?? null;
 }
 
 /** Get player inventory. */
 export async function getInventory(authId: string) {
-  const { data: player } = await supabase
-    .from('players')
-    .select('id')
-    .eq('auth_id', authId)
-    .single();
+  const playerRes = await pool.query(
+    'SELECT id FROM players WHERE auth_id = $1 LIMIT 1',
+    [authId],
+  );
+  if (playerRes.rows.length === 0) return [];
 
-  if (!player) return [];
+  const res = await pool.query(
+    'SELECT * FROM inventory WHERE player_id = $1 ORDER BY obtained_at DESC',
+    [playerRes.rows[0].id],
+  );
 
-  const { data } = await supabase
-    .from('inventory')
-    .select('*')
-    .eq('player_id', player.id)
-    .order('obtained_at', { ascending: false });
-
-  return data ?? [];
+  return res.rows;
 }
 
 /** Add item to inventory. */
 export async function addItem(authId: string, itemType: string, itemId: string, rarity: string) {
-  const { data: player } = await supabase
-    .from('players')
-    .select('id')
-    .eq('auth_id', authId)
-    .single();
+  const playerRes = await pool.query(
+    'SELECT id FROM players WHERE auth_id = $1 LIMIT 1',
+    [authId],
+  );
+  if (playerRes.rows.length === 0) return null;
 
-  if (!player) return null;
+  const res = await pool.query(
+    `INSERT INTO inventory (player_id, item_type, item_id, rarity)
+     VALUES ($1, $2, $3, $4) RETURNING *`,
+    [playerRes.rows[0].id, itemType, itemId, rarity],
+  );
 
-  const { data, error } = await supabase
-    .from('inventory')
-    .insert({ player_id: player.id, item_type: itemType, item_id: itemId, rarity })
-    .select()
-    .single();
-
-  if (error) console.error('[DB] Failed to add item:', error);
-  return data;
+  return res.rows[0] ?? null;
 }
 
 /** Valid equipment slot types. */
@@ -157,46 +158,35 @@ export type EquipmentSlot = typeof EQUIPMENT_SLOTS[number];
 
 /**
  * Equip an inventory item. Unequips any other item in the same item_type slot first.
- * Returns the updated inventory list on success, null on failure.
  */
 export async function equipItem(authId: string, inventoryItemId: string) {
-  const { data: player } = await supabase
-    .from('players')
-    .select('id')
-    .eq('auth_id', authId)
-    .single();
-
-  if (!player) return null;
+  const playerRes = await pool.query(
+    'SELECT id FROM players WHERE auth_id = $1 LIMIT 1',
+    [authId],
+  );
+  if (playerRes.rows.length === 0) return null;
+  const playerId = playerRes.rows[0].id;
 
   // Fetch the item being equipped to get its item_type
-  const { data: item } = await supabase
-    .from('inventory')
-    .select('id, item_type')
-    .eq('id', inventoryItemId)
-    .eq('player_id', player.id)
-    .single();
-
-  if (!item) return null;
+  const itemRes = await pool.query(
+    'SELECT id, item_type FROM inventory WHERE id = $1 AND player_id = $2 LIMIT 1',
+    [inventoryItemId, playerId],
+  );
+  if (itemRes.rows.length === 0) return null;
+  const item = itemRes.rows[0];
 
   // Unequip any currently equipped item in the same slot
-  await supabase
-    .from('inventory')
-    .update({ equipped: false })
-    .eq('player_id', player.id)
-    .eq('item_type', item.item_type)
-    .eq('equipped', true);
+  await pool.query(
+    `UPDATE inventory SET equipped = false
+     WHERE player_id = $1 AND item_type = $2 AND equipped = true`,
+    [playerId, item.item_type],
+  );
 
   // Equip the target item
-  const { error } = await supabase
-    .from('inventory')
-    .update({ equipped: true })
-    .eq('id', inventoryItemId)
-    .eq('player_id', player.id);
-
-  if (error) {
-    console.error('[DB] Failed to equip item:', error);
-    return null;
-  }
+  await pool.query(
+    'UPDATE inventory SET equipped = true WHERE id = $1 AND player_id = $2',
+    [inventoryItemId, playerId],
+  );
 
   return { ok: true };
 }
@@ -205,24 +195,116 @@ export async function equipItem(authId: string, inventoryItemId: string) {
  * Unequip an inventory item.
  */
 export async function unequipItem(authId: string, inventoryItemId: string) {
-  const { data: player } = await supabase
-    .from('players')
-    .select('id')
-    .eq('auth_id', authId)
-    .single();
+  const playerRes = await pool.query(
+    'SELECT id FROM players WHERE auth_id = $1 LIMIT 1',
+    [authId],
+  );
+  if (playerRes.rows.length === 0) return null;
+  const playerId = playerRes.rows[0].id;
 
-  if (!player) return null;
-
-  const { error } = await supabase
-    .from('inventory')
-    .update({ equipped: false })
-    .eq('id', inventoryItemId)
-    .eq('player_id', player.id);
-
-  if (error) {
-    console.error('[DB] Failed to unequip item:', error);
-    return null;
-  }
+  await pool.query(
+    'UPDATE inventory SET equipped = false WHERE id = $1 AND player_id = $2',
+    [inventoryItemId, playerId],
+  );
 
   return { ok: true };
+}
+
+/**
+ * Find a player by email. Returns the full player row including password_hash, or null.
+ */
+export async function findPlayerByEmail(email: string) {
+  const res = await pool.query(
+    'SELECT * FROM players WHERE email = $1 LIMIT 1',
+    [email],
+  );
+  return res.rows[0] ?? null;
+}
+
+/**
+ * Find a player by Google sub (OAuth subject ID). Returns the full player row or null.
+ */
+export async function findPlayerByGoogleSub(googleSub: string) {
+  const res = await pool.query(
+    'SELECT * FROM players WHERE google_sub = $1 LIMIT 1',
+    [googleSub],
+  );
+  return res.rows[0] ?? null;
+}
+
+/**
+ * Create a player from email/password registration.
+ * Seeds starter items automatically.
+ */
+export async function createPlayerWithPassword(
+  email: string,
+  username: string,
+  passwordHash: string,
+) {
+  const created = await pool.query(
+    `INSERT INTO players (email, username, password_hash)
+     VALUES ($1, $2, $3)
+     RETURNING *`,
+    [email, username, passwordHash],
+  );
+
+  if (created.rows.length === 0) return null;
+  const player = created.rows[0];
+
+  // Seed starter inventory items
+  for (const item of STARTER_ITEMS) {
+    await pool.query(
+      `INSERT INTO inventory (player_id, item_type, item_id, rarity)
+       VALUES ($1, $2, $3, $4)`,
+      [player.id, item.item_type, item.item_id, item.rarity],
+    );
+  }
+
+  return player;
+}
+
+/**
+ * Create (or get) a player from Google OAuth.
+ * Seeds starter items on first creation.
+ */
+export async function getOrCreatePlayerByGoogle(
+  googleSub: string,
+  email: string,
+  username: string,
+) {
+  // Check existing by google_sub
+  const existing = await findPlayerByGoogleSub(googleSub);
+  if (existing) return existing;
+
+  // Check if email already registered (link accounts)
+  const byEmail = await findPlayerByEmail(email);
+  if (byEmail) {
+    await pool.query(
+      'UPDATE players SET google_sub = $1 WHERE id = $2',
+      [googleSub, byEmail.id],
+    );
+    return { ...byEmail, google_sub: googleSub };
+  }
+
+  // Create new
+  const created = await pool.query(
+    `INSERT INTO players (google_sub, email, username)
+     VALUES ($1, $2, $3)
+     RETURNING *`,
+    [googleSub, email, username],
+  );
+
+  if (created.rows.length === 0) return null;
+  const player = created.rows[0];
+
+  // Seed starter items
+  for (const item of STARTER_ITEMS) {
+    await pool.query(
+      `INSERT INTO inventory (player_id, item_type, item_id, rarity)
+       VALUES ($1, $2, $3, $4)`,
+      [player.id, item.item_type, item.item_id, item.rarity],
+    );
+  }
+
+  return player;
 }

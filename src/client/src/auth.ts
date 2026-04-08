@@ -1,34 +1,148 @@
-import { createClient, SupabaseClient, Session } from '@supabase/supabase-js';
+/**
+ * Custom auth module — replaces Supabase auth with email/password + Google Sign-In.
+ * Tokens are stored in localStorage. The server issues JWTs.
+ */
 
-const SUPABASE_URL = 'https://vhasmsyvrxqxdjnmmvhq.supabase.co';
-const SUPABASE_ANON_KEY = 'sb_publishable_Dsl77q3mTpVsesFXxzCTVA_odHlgIOp';
+const GOOGLE_CLIENT_ID = '693892772498-hfv8rp9djr3onhaqjgp9t44tcmv8k3vp.apps.googleusercontent.com';
 
-export const supabase: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const TOKEN_KEY = 'crazy_stuff_token';
+const USER_KEY = 'crazy_stuff_user';
+
+/** Matches the shape consumed by LobbyScene / IsoScene (`authState.session.user.id`). */
+export interface AuthSession {
+  user: { id: string; email?: string };
+  access_token: string;
+}
 
 export interface AuthState {
-  session: Session | null;
+  session: AuthSession | null;
   username: string;
 }
 
-/** Show login/register UI and return authenticated session + username. */
-export async function authenticate(): Promise<AuthState> {
-  // Check for existing session (including OAuth redirect)
-  const { data: { session } } = await supabase.auth.getSession();
-  if (session) {
-    let username = session.user.user_metadata?.username
-      ?? session.user.user_metadata?.full_name
-      ?? session.user.email?.split('@')[0]
-      ?? '';
+// ─── API helpers ────────────────────────────────────────────────────────────
 
-    // If no username set (e.g. Google login), prompt for one
-    if (!username || username === 'Player') {
-      username = window.prompt('Choose a username (max 20 characters):', '')?.trim() || 'Player';
-      username = username.replace(/[^a-zA-Z0-9 ]/g, '').slice(0, 20).trim() || 'Player';
-      await supabase.auth.updateUser({ data: { username } });
-    }
-
-    return { session, username };
+function apiBase(): string {
+  const loc = window.location;
+  if (loc.hostname === 'localhost' || loc.hostname === '127.0.0.1') {
+    return `${loc.protocol}//${loc.hostname}:3000`;
   }
+  return `${loc.protocol}//${loc.host}`;
+}
+
+async function apiPost(path: string, body: Record<string, unknown>): Promise<{ ok: boolean; data?: any; error?: string }> {
+  try {
+    const resp = await fetch(`${apiBase()}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await resp.json();
+    if (!resp.ok) return { ok: false, error: data.error ?? 'Request failed' };
+    return { ok: true, data };
+  } catch {
+    return { ok: false, error: 'Network error' };
+  }
+}
+
+// ─── Token persistence ──────────────────────────────────────────────────────
+
+function saveAuth(token: string, user: { id: string; username: string; email?: string }): void {
+  localStorage.setItem(TOKEN_KEY, token);
+  localStorage.setItem(USER_KEY, JSON.stringify(user));
+}
+
+function loadAuth(): { token: string; user: { id: string; username: string; email?: string } } | null {
+  const token = localStorage.getItem(TOKEN_KEY);
+  const raw = localStorage.getItem(USER_KEY);
+  if (!token || !raw) return null;
+  try {
+    return { token, user: JSON.parse(raw) };
+  } catch {
+    return null;
+  }
+}
+
+function clearAuth(): void {
+  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(USER_KEY);
+}
+
+// ─── Google Sign-In (GSI) ───────────────────────────────────────────────────
+
+let gsiLoaded = false;
+
+function loadGsi(): Promise<void> {
+  if (gsiLoaded) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = 'https://accounts.google.com/gsi/client';
+    script.async = true;
+    script.onload = () => { gsiLoaded = true; resolve(); };
+    script.onerror = () => reject(new Error('Failed to load Google Sign-In'));
+    document.head.appendChild(script);
+  });
+}
+
+/** Trigger Google one-tap / popup and return the credential (ID token). */
+function googleSignIn(): Promise<string> {
+  return new Promise((resolve, reject) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const google = (window as any).google;
+    if (!google?.accounts?.id) {
+      reject(new Error('Google Sign-In not loaded'));
+      return;
+    }
+    google.accounts.id.initialize({
+      client_id: GOOGLE_CLIENT_ID,
+      callback: (response: { credential: string }) => {
+        if (response.credential) resolve(response.credential);
+        else reject(new Error('No credential'));
+      },
+    });
+    google.accounts.id.prompt((notification: { isNotDisplayed: () => boolean; isSkippedMoment: () => boolean }) => {
+      // If one-tap is blocked, fall back to the button / popup
+      if (notification.isNotDisplayed() || notification.isSkippedMoment()) {
+        // Render a hidden button and click it to open the popup
+        let container = document.getElementById('g_id_signin_container');
+        if (!container) {
+          container = document.createElement('div');
+          container.id = 'g_id_signin_container';
+          container.style.position = 'fixed';
+          container.style.top = '-9999px';
+          document.body.appendChild(container);
+        }
+        google.accounts.id.renderButton(container, { type: 'standard' });
+        const btn = container.querySelector('div[role=button]') as HTMLElement | null;
+        if (btn) btn.click();
+      }
+    });
+  });
+}
+
+// ─── Public API ─────────────────────────────────────────────────────────────
+
+/** Check for existing session or show login/register UI. */
+export async function authenticate(): Promise<AuthState> {
+  // Check saved token
+  const saved = loadAuth();
+  if (saved) {
+    try {
+      const resp = await fetch(`${apiBase()}/auth/me`, {
+        headers: { Authorization: `Bearer ${saved.token}` },
+      });
+      if (resp.ok) {
+        const user = await resp.json();
+        return {
+          session: { user: { id: user.id, email: user.email }, access_token: saved.token },
+          username: user.username,
+        };
+      }
+    } catch { /* token invalid/expired — fall through to modal */ }
+    clearAuth();
+  }
+
+  // Load GSI script in background
+  loadGsi().catch(() => {});
 
   // Show auth modal
   return new Promise((resolve) => {
@@ -79,20 +193,27 @@ export async function authenticate(): Promise<AuthState> {
 
     const cleanName = (raw: string) => raw.replace(/[^a-zA-Z0-9 ]/g, '').slice(0, 20).trim() || 'Player';
 
+    const finish = (token: string, user: { id: string; username: string; email?: string }) => {
+      saveAuth(token, user);
+      overlay.remove();
+      resolve({
+        session: { user: { id: user.id, email: user.email }, access_token: token },
+        username: user.username,
+      });
+    };
+
+    // ── LOGIN ──
     document.getElementById('auth-login')!.onclick = async () => {
       const email = emailInput.value.trim();
       const password = passwordInput.value;
       if (!email || !password) { showError('Email and password required'); return; }
 
-      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-      if (error) { showError(error.message); return; }
-      if (data.session) {
-        overlay.remove();
-        const username = data.session.user.user_metadata?.username ?? email.split('@')[0];
-        resolve({ session: data.session, username: cleanName(username) });
-      }
+      const result = await apiPost('/auth/login', { email, password });
+      if (!result.ok) { showError(result.error!); return; }
+      finish(result.data.token, result.data.user);
     };
 
+    // ── REGISTER ──
     document.getElementById('auth-register')!.onclick = async () => {
       const username = cleanName(usernameInput.value);
       const email = emailInput.value.trim();
@@ -100,32 +221,34 @@ export async function authenticate(): Promise<AuthState> {
       if (!username || !email || !password) { showError('All fields required'); return; }
       if (password.length < 6) { showError('Password must be at least 6 characters'); return; }
 
-      const { data, error } = await supabase.auth.signUp({
-        email,
-        password,
-        options: { data: { username } },
-      });
-      if (error) { showError(error.message); return; }
-      if (data.session) {
-        overlay.remove();
-        resolve({ session: data.session, username });
-      } else {
-        showError('Check your email to confirm your account');
-      }
+      const result = await apiPost('/auth/register', { email, password, username });
+      if (!result.ok) { showError(result.error!); return; }
+      finish(result.data.token, result.data.user);
     };
 
+    // ── GOOGLE ──
     document.getElementById('auth-google')!.onclick = async () => {
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider: 'google',
-        options: { redirectTo: window.location.origin },
-      });
-      if (error) showError(error.message);
-      // OAuth redirects to Google, then back — session will be picked up on reload
+      try {
+        await loadGsi();
+        const idToken = await googleSignIn();
+        const result = await apiPost('/auth/google', { idToken });
+        if (!result.ok) { showError(result.error!); return; }
+
+        let username = result.data.user.username;
+        // If server returns default, prompt for a username
+        if (!username || username === 'Player') {
+          username = window.prompt('Choose a username (max 20 characters):', '')?.trim() || 'Player';
+          username = cleanName(username);
+        }
+        finish(result.data.token, { ...result.data.user, username });
+      } catch (e: unknown) {
+        showError(e instanceof Error ? e.message : 'Google sign-in failed');
+      }
     };
   });
 }
 
-/** Sign out. */
-export async function signOut() {
-  await supabase.auth.signOut();
+/** Sign out — clear local tokens. */
+export async function signOut(): Promise<void> {
+  clearAuth();
 }
