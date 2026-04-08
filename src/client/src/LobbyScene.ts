@@ -39,6 +39,9 @@ export class LobbyScene extends Phaser.Scene {
   private charKey = DEFAULT_CHAR_KEY;
   private profilePanel: HTMLDivElement | null = null;
   private profileBtn: HTMLButtonElement | null = null;
+  private inventoryPanel: HTMLDivElement | null = null;
+  private chatBox: HTMLDivElement | null = null;
+  private chatMessages: { name: string; msg: string; time: string }[] = [];
   private queueOverlay: HTMLDivElement | null = null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private queueRoom: any = null;
@@ -155,10 +158,22 @@ export class LobbyScene extends Phaser.Scene {
       if (dist <= INTERACT_DIST) this.enterRace();
     });
 
+    const iKey = kb.addKey(Phaser.Input.Keyboard.KeyCodes.I);
+    iKey.on('down', () => this.toggleInventory());
+
+    const enterKey = kb.addKey(Phaser.Input.Keyboard.KeyCodes.ENTER);
+    enterKey.on('down', () => {
+      const input = document.getElementById('chat-input') as HTMLInputElement | null;
+      if (input) input.focus();
+    });
+
     // WASD hint
-    this.add.text(10, height - 30, 'WASD to move · E to interact', {
+    this.add.text(10, height - 30, 'WASD move · E interact · P profile · I inventory · Enter chat', {
       fontSize: '12px', fontFamily: 'monospace', color: '#555',
     }).setScrollFactor(0).setDepth(100);
+
+    // Chat box (always visible)
+    this.createChatBox();
 
     // Load equipped character from server and create profile button
     const authId = this.authState?.session?.user?.id;
@@ -368,6 +383,11 @@ export class LobbyScene extends Phaser.Scene {
       }
     });
 
+    this.lobbyRoom.onMessage('chat', (data: { playerName: string; message: string; timestamp: string; sessionId: string }) => {
+      this.addChatMessage(data.playerName, data.message, data.timestamp);
+      this.showSpeechBubble(data.sessionId, data.message);
+    });
+
     this.lobbyRoom.onLeave(() => {
       this.lobbyRoom = null;
     });
@@ -506,6 +526,8 @@ export class LobbyScene extends Phaser.Scene {
   private cleanupScene(): void {
     if (this.profilePanel) { this.profilePanel.remove(); this.profilePanel = null; }
     if (this.profileBtn) { this.profileBtn.remove(); this.profileBtn = null; }
+    if (this.inventoryPanel) { this.inventoryPanel.remove(); this.inventoryPanel = null; }
+    if (this.chatBox) { this.chatBox.remove(); this.chatBox = null; }
     this.destroyQueueUI();
     if (this.queueRoom) { this.queueRoom.leave(); this.queueRoom = null; }
     if (this.lobbyRoom) { this.lobbyRoom.leave(); this.lobbyRoom = null; }
@@ -816,5 +838,217 @@ export class LobbyScene extends Phaser.Scene {
         (canvas.width - 56) / 2, (canvas.height - 56) / 2, 56, 56,
       );
     } catch { /* texture not loaded yet, leave blank */ }
+  }
+
+  // ─── Chat ───────────────────────────────────────────────────────────────
+
+  private createChatBox(): void {
+    const box = document.createElement('div');
+    box.id = 'chat-box';
+    box.style.cssText = `
+      position: fixed; bottom: 50px; left: 10px; width: 320px; z-index: 6000;
+      font-family: monospace; pointer-events: auto;
+    `;
+    box.innerHTML = `
+      <div id="chat-messages" style="
+        height: 160px; overflow-y: auto; background: rgba(0,0,0,0.6);
+        border: 1px solid #333; border-bottom: none; border-radius: 4px 4px 0 0;
+        padding: 6px 8px; font-size: 12px; color: #ccc;
+      "></div>
+      <div style="display: flex;">
+        <input id="chat-input" type="text" placeholder="Press Enter to chat..." maxlength="100"
+          style="flex: 1; padding: 8px; background: #111; border: 1px solid #333;
+          color: #fff; font-family: monospace; font-size: 12px; outline: none;
+          border-radius: 0 0 0 4px;" />
+        <button id="chat-send" style="padding: 8px 12px; background: #333; border: 1px solid #333;
+          color: #aaa; cursor: pointer; font-family: monospace; border-radius: 0 0 4px 0;">Send</button>
+      </div>
+    `;
+    document.body.appendChild(box);
+    this.chatBox = box;
+
+    const input = document.getElementById('chat-input') as HTMLInputElement;
+    const sendBtn = document.getElementById('chat-send') as HTMLButtonElement;
+
+    // Stop keyboard events from reaching Phaser
+    input.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      if (e.key === 'Enter' && input.value.trim()) {
+        this.sendChat(input.value.trim());
+        input.value = '';
+      }
+    });
+    input.addEventListener('keyup', (e) => e.stopPropagation());
+    input.addEventListener('keypress', (e) => e.stopPropagation());
+
+    sendBtn.onclick = () => {
+      if (input.value.trim()) {
+        this.sendChat(input.value.trim());
+        input.value = '';
+      }
+    };
+  }
+
+  private sendChat(message: string): void {
+    if (!this.lobbyRoom) return;
+    this.lobbyRoom.send('chat', { message: message.slice(0, 100) });
+  }
+
+  private showSpeechBubble(sessionId: string, message: string): void {
+    const truncated = message.length > 40 ? message.slice(0, 40) + '...' : message;
+
+    // Find the sprite — either local player or other player
+    const myId = this.lobbyRoom?.sessionId;
+    let x: number, y: number;
+
+    if (sessionId === myId) {
+      x = this.playerX;
+      y = this.playerY - 70;
+    } else {
+      const other = this.otherPlayers.get(sessionId);
+      if (!other) return;
+      x = other.sprite.x;
+      y = other.sprite.y - 70;
+    }
+
+    const bubble = this.add.text(x, y, truncated, {
+      fontSize: '11px',
+      fontFamily: 'monospace',
+      color: '#ffffff',
+      backgroundColor: '#000000cc',
+      padding: { x: 6, y: 3 },
+    }).setOrigin(0.5, 1).setDepth(50);
+
+    // Fade out after 3 seconds
+    this.tweens.add({
+      targets: bubble,
+      alpha: 0,
+      y: y - 20,
+      duration: 3000,
+      delay: 2000,
+      onComplete: () => bubble.destroy(),
+    });
+  }
+
+  private addChatMessage(name: string, msg: string, time: string): void {
+    this.chatMessages.push({ name, msg, time });
+    if (this.chatMessages.length > 50) this.chatMessages.shift();
+
+    const el = document.getElementById('chat-messages');
+    if (!el) return;
+
+    const div = document.createElement('div');
+    div.style.cssText = 'margin: 3px 0;';
+    div.innerHTML = `<span style="color: #ffdd44; font-weight: bold;">${name}:</span> <span style="color: #ccc;">${msg}</span>`;
+    el.appendChild(div);
+    el.scrollTop = el.scrollHeight;
+  }
+
+  // ─── Inventory ──────────────────────────────────────────────────────────
+
+  private toggleInventory(): void {
+    if (this.inventoryPanel) {
+      this.inventoryPanel.remove();
+      this.inventoryPanel = null;
+      return;
+    }
+    this.openInventory();
+  }
+
+  private async openInventory(): Promise<void> {
+    if (this.inventoryPanel) { this.inventoryPanel.remove(); this.inventoryPanel = null; }
+
+    const panel = document.createElement('div');
+    panel.style.cssText = `
+      position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      background: #1a1a2e; border: 2px solid #444; border-radius: 8px;
+      padding: 24px; width: 450px; max-height: 500px; overflow-y: auto;
+      z-index: 9000; font-family: monospace; color: #eee;
+    `;
+    panel.addEventListener('keydown', (e) => e.stopPropagation());
+    panel.addEventListener('keyup', (e) => e.stopPropagation());
+
+    const closeBtn = document.createElement('button');
+    closeBtn.textContent = '✕';
+    closeBtn.style.cssText = 'position: absolute; top: 8px; right: 12px; background: none; border: none; color: #888; font-size: 18px; cursor: pointer;';
+    closeBtn.onclick = () => { this.inventoryPanel?.remove(); this.inventoryPanel = null; };
+    panel.appendChild(closeBtn);
+
+    const title = document.createElement('h2');
+    title.textContent = 'INVENTORY';
+    title.style.cssText = 'margin: 0 0 16px; text-align: center; color: #ffdd44; font-size: 18px;';
+    panel.appendChild(title);
+
+    const grid = document.createElement('div');
+    grid.id = 'inventory-grid';
+    grid.style.cssText = 'display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;';
+    panel.appendChild(grid);
+
+    document.body.appendChild(panel);
+    this.inventoryPanel = panel;
+
+    // Fetch inventory
+    const authId = this.authState?.session?.user?.id;
+    if (!authId) {
+      grid.innerHTML = '<div style="grid-column: span 4; text-align: center; color: #666;">Not logged in</div>';
+      return;
+    }
+
+    try {
+      const resp = await fetch(`${this.apiBase()}/api/player/${authId}/inventory`);
+      if (!resp.ok) throw new Error('fetch failed');
+      const items = await resp.json();
+
+      if (!items || items.length === 0) {
+        grid.innerHTML = `
+          <div style="grid-column: span 4; text-align: center; color: #666; padding: 40px 0;">
+            <div style="font-size: 32px; margin-bottom: 12px;">📦</div>
+            <div>No items yet</div>
+            <div style="font-size: 11px; margin-top: 8px; color: #444;">Win races and visit the store to earn items!</div>
+          </div>
+        `;
+        return;
+      }
+
+      const RARITY_COLORS: Record<string, string> = {
+        common: '#888', uncommon: '#44bb44', rare: '#4488ff',
+        epic: '#aa44ff', legendary: '#ffaa00', crazy: '#ff44ff',
+      };
+
+      for (const item of items) {
+        const card = document.createElement('div');
+        const borderColor = RARITY_COLORS[item.rarity] ?? '#444';
+        card.style.cssText = `
+          background: #222; border: 2px solid ${borderColor}; border-radius: 6px;
+          padding: 10px; text-align: center; cursor: pointer; position: relative;
+        `;
+        card.innerHTML = `
+          <div style="width: 40px; height: 40px; background: ${borderColor}33; border-radius: 4px;
+            margin: 0 auto 6px; display: flex; align-items: center; justify-content: center;
+            font-size: 20px;">${item.equipped ? '⭐' : '📦'}</div>
+          <div style="font-size: 11px; color: #eee;">${item.item_id}</div>
+          <div style="font-size: 10px; color: ${borderColor}; text-transform: capitalize;">${item.rarity}</div>
+          ${item.equipped ? '<div style="font-size: 9px; color: #ffdd44; margin-top: 4px;">EQUIPPED</div>' : ''}
+        `;
+        card.onclick = () => this.toggleEquipItem(item.id, !item.equipped);
+        grid.appendChild(card);
+      }
+    } catch {
+      grid.innerHTML = '<div style="grid-column: span 4; text-align: center; color: #666;">Could not load inventory</div>';
+    }
+  }
+
+  private async toggleEquipItem(itemId: string, equip: boolean): Promise<void> {
+    const authId = this.authState?.session?.user?.id;
+    if (!authId) return;
+    try {
+      await fetch(`${this.apiBase()}/api/player/${authId}/equip`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inventoryItemId: itemId, equipped: equip }),
+      });
+      // Refresh inventory
+      this.openInventory();
+    } catch { /* ignore */ }
   }
 }

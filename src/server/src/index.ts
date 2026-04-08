@@ -70,6 +70,33 @@ app.post('/api/player/:authId/equip-char', async (req, res) => {
   }
 });
 
+// Inventory API
+app.get('/api/player/:authId/inventory', async (req, res) => {
+  try {
+    const { getInventory } = await import('./db/supabase');
+    const items = await getInventory(req.params.authId);
+    res.json(items);
+  } catch (e) {
+    res.status(500).json({ error: 'db error' });
+  }
+});
+
+app.post('/api/player/:authId/equip', async (req, res) => {
+  try {
+    const { inventoryItemId, equipped } = req.body;
+    if (!inventoryItemId) return res.status(400).json({ error: 'inventoryItemId required' });
+    const { supabase } = await import('./db/supabase');
+    const { error } = await supabase
+      .from('inventory')
+      .update({ equipped: !!equipped })
+      .eq('id', inventoryItemId);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: 'db error' });
+  }
+});
+
 // SPA fallback — serve index.html for any non-API route
 app.get('*', (_req, res) => {
   res.sendFile(path.join(clientDist, 'index.html'));

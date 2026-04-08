@@ -41,6 +41,19 @@ export class LobbyRoom extends Room<LobbyState> {
       this.broadcast('lobbyState', { players });
     });
 
+    this.onMessage('chat', (client, data: { message?: string }) => {
+      const p = this.lobbyPlayers.get(client.sessionId);
+      if (!p || !data?.message) return;
+      const message = data.message.slice(0, 100).trim();
+      if (!message) return;
+      this.broadcast('chat', {
+        sessionId: client.sessionId,
+        playerName: p.playerName,
+        message,
+        timestamp: new Date().toISOString(),
+      });
+    });
+
     // Broadcast positions at 10 ticks/sec
     this.setSimulationInterval(() => {
       const players = Array.from(this.lobbyPlayers.values());
