@@ -246,16 +246,17 @@ export async function authenticate(): Promise<AuthState> {
       try {
         await loadGsi();
         const idToken = await googleSignIn();
-        const result = await apiPost('/auth/google', { idToken });
-        if (!result.ok) { showError(result.error!); return; }
 
-        let username = result.data.user.username;
-        // If server returns default, prompt for a username
+        // Always ask for a username before sending to server
+        let username = cleanName(usernameInput.value);
         if (!username || username === 'Player') {
           username = window.prompt('Choose a username (max 20 characters):', '')?.trim() || 'Player';
           username = cleanName(username);
         }
-        finish(result.data.token, { ...result.data.user, username });
+
+        const result = await apiPost('/auth/google', { idToken, username });
+        if (!result.ok) { showError(result.error!); return; }
+        finish(result.data.token, result.data.user);
       } catch (e: unknown) {
         showError(e instanceof Error ? e.message : 'Google sign-in failed');
       }
