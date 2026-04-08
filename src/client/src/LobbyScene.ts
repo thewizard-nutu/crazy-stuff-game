@@ -643,6 +643,17 @@ export class LobbyScene extends Phaser.Scene {
     container.appendChild(invBtn);
     this.inventoryBtn = invBtn;
 
+    const logoutBtn = document.createElement('button');
+    logoutBtn.textContent = '🚪 Logout';
+    logoutBtn.style.cssText = btnStyle + 'color: #ff6666;';
+    logoutBtn.onmouseenter = () => { logoutBtn.style.borderColor = '#ff6666'; };
+    logoutBtn.onmouseleave = () => { logoutBtn.style.borderColor = '#555'; };
+    logoutBtn.onclick = () => {
+      localStorage.clear();
+      window.location.reload();
+    };
+    container.appendChild(logoutBtn);
+
     document.body.appendChild(container);
   }
 
