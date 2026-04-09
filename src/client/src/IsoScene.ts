@@ -1692,10 +1692,8 @@ export class IsoScene extends Phaser.Scene {
     });
 
     room.onMessage('playerLoadout', (data: { slotIndex: number; charKey: string; loadout: Record<string, string> }) => {
-      const av = this.avatars.get(data.slotIndex);
-      if (av) {
-        this.applyLoadout(av, data.loadout, data.charKey);
-      }
+      // TODO: re-enable once items have sprites — currently only wizard_hat test has sprites
+      console.log('[Equipment] received server loadout for slot', data.slotIndex, data.loadout);
     });
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
