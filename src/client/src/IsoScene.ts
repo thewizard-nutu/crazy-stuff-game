@@ -1104,13 +1104,13 @@ export class IsoScene extends Phaser.Scene {
       if (this.room && this.currentPhase === RacePhase.Racing) this.room.send('usePickup');
     });
     kb.on('keydown-SPACE', () => {
-      if (this.room && (this.currentPhase === RacePhase.Racing || this.currentPhase === RacePhase.Waiting)) this.room.send('jump');
+      if (this.room && this.currentPhase === RacePhase.Racing) this.room.send('jump');
     });
     kb.on('keydown-I', () => this.toggleInventory());
   }
 
   private sendMove(direction: string): void {
-    if (this.currentPhase !== RacePhase.Racing && this.currentPhase !== RacePhase.Waiting) return;
+    if (this.currentPhase !== RacePhase.Racing) return;
     this.playerFacing = direction;
     this.lastSendTime = Date.now();
     const sprint = this.shiftKey?.isDown ?? false;
