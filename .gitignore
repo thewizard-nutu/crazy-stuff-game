@@ -12,9 +12,19 @@ Desktop.ini
 # === Claude Code Local ===
 .claude/settings.local.json
 .claude/docs/UPGRADE-PLAN.md
+.claude/scheduled_tasks.lock
 CLAUDE.local.md
 production/session-logs/
 production/session-state/*.md
+
+# === Sibling Project (not part of this repo) ===
+crazy-stuff-sara/
+
+# === TS Incremental Build Cache ===
+*.tsbuildinfo
+
+# === PixelLab Local Cache ===
+tools/pixellab-downloads/
 
 # === Internal Planning (not for public) ===
 docs/IMPROVEMENTS-PROPOSAL.md
