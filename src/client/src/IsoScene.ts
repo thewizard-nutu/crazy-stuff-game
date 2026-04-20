@@ -1266,8 +1266,10 @@ export class IsoScene extends Phaser.Scene {
       // Equipment frame size — may differ from base character (e.g. 132 for PixelLab-generated overlays)
       const eqFrameSize = EQUIP_FRAME_SIZES[itemId] ?? 92;
       const availableAnims = EQUIP_AVAILABLE_ANIMS[itemId] ?? ['walk', 'idle'];
+      // Fall back to 'male' sprites — character-specific equipment not yet available
+      const equipCharKey = 'male';
       for (const dir of PL_DIRS_LIST) {
-        const basePath = `/sprites/equipment/${slot}/${itemId}/${charKey}`;
+        const basePath = `/sprites/equipment/${slot}/${itemId}/${equipCharKey}`;
         if (availableAnims.includes('walk'))
           this.load.spritesheet(`equip_${itemId}_${dir}`, `${basePath}/walk_${dir}.png`, { frameWidth: eqFrameSize, frameHeight: eqFrameSize });
         if (availableAnims.includes('run'))
@@ -2089,13 +2091,38 @@ export class IsoScene extends Phaser.Scene {
   }
 
   private static readonly DEV_ITEMS = [
-    { id: 'dev-1', item_type: 'head_accessory', item_id: 'wizard_hat', rarity: 'rare', equipped: false },
-    { id: 'dev-2', item_type: 'upper_body', item_id: 'worn_tshirt', rarity: 'common', equipped: true },
-    { id: 'dev-3', item_type: 'lower_body', item_id: 'blue_jeans', rarity: 'common', equipped: true },
-    { id: 'dev-4', item_type: 'feet', item_id: 'beatup_sneakers', rarity: 'common', equipped: true },
-    { id: 'dev-5', item_type: 'upper_body', item_id: 'worn_tshirt_red',     rarity: 'uncommon', equipped: false },
-    { id: 'dev-6', item_type: 'upper_body', item_id: 'worn_tshirt_star',    rarity: 'rare',     equipped: false },
-    { id: 'dev-7', item_type: 'upper_body', item_id: 'worn_tshirt_stripes', rarity: 'uncommon', equipped: false },
+    // Head
+    { id: 'dev-1',  item_type: 'head_accessory', item_id: 'wizard_hat',       rarity: 'rare',     equipped: false },
+    // Upper body — starter
+    { id: 'dev-2',  item_type: 'upper_body', item_id: 'worn_tshirt',          rarity: 'common',   equipped: true },
+    // Upper body — color variants
+    { id: 'dev-10', item_type: 'upper_body', item_id: 'tshirt_red',           rarity: 'common',   equipped: false },
+    { id: 'dev-11', item_type: 'upper_body', item_id: 'tshirt_blue',          rarity: 'common',   equipped: false },
+    { id: 'dev-12', item_type: 'upper_body', item_id: 'tshirt_green',         rarity: 'common',   equipped: false },
+    { id: 'dev-13', item_type: 'upper_body', item_id: 'tshirt_purple',        rarity: 'uncommon', equipped: false },
+    { id: 'dev-14', item_type: 'upper_body', item_id: 'tshirt_yellow',        rarity: 'common',   equipped: false },
+    { id: 'dev-15', item_type: 'upper_body', item_id: 'tshirt_pink',          rarity: 'uncommon', equipped: false },
+    { id: 'dev-16', item_type: 'upper_body', item_id: 'tshirt_brown',         rarity: 'common',   equipped: false },
+    { id: 'dev-17', item_type: 'upper_body', item_id: 'tshirt_black',         rarity: 'uncommon', equipped: false },
+    { id: 'dev-18', item_type: 'upper_body', item_id: 'tshirt_white',         rarity: 'common',   equipped: false },
+    // Upper body — pattern variants
+    { id: 'dev-19', item_type: 'upper_body', item_id: 'tshirt_stripes',       rarity: 'uncommon', equipped: false },
+    // Lower body — starter + variants
+    { id: 'dev-3',  item_type: 'lower_body', item_id: 'blue_jeans',           rarity: 'common',   equipped: true },
+    { id: 'dev-30', item_type: 'lower_body', item_id: 'jeans_black',          rarity: 'uncommon', equipped: false },
+    { id: 'dev-31', item_type: 'lower_body', item_id: 'jeans_grey',           rarity: 'common',   equipped: false },
+    { id: 'dev-32', item_type: 'lower_body', item_id: 'jeans_brown',          rarity: 'common',   equipped: false },
+    { id: 'dev-33', item_type: 'lower_body', item_id: 'jeans_khaki',          rarity: 'common',   equipped: false },
+    { id: 'dev-34', item_type: 'lower_body', item_id: 'jeans_red',            rarity: 'uncommon', equipped: false },
+    { id: 'dev-35', item_type: 'lower_body', item_id: 'jeans_green',          rarity: 'uncommon', equipped: false },
+    // Feet — starter + variants
+    { id: 'dev-4',  item_type: 'feet',       item_id: 'beatup_sneakers',      rarity: 'common',   equipped: true },
+    { id: 'dev-40', item_type: 'feet',       item_id: 'sneakers_red',         rarity: 'common',   equipped: false },
+    { id: 'dev-41', item_type: 'feet',       item_id: 'sneakers_blue',        rarity: 'common',   equipped: false },
+    { id: 'dev-42', item_type: 'feet',       item_id: 'sneakers_green',       rarity: 'common',   equipped: false },
+    { id: 'dev-43', item_type: 'feet',       item_id: 'sneakers_yellow',      rarity: 'uncommon', equipped: false },
+    { id: 'dev-44', item_type: 'feet',       item_id: 'sneakers_black',       rarity: 'uncommon', equipped: false },
+    { id: 'dev-45', item_type: 'feet',       item_id: 'sneakers_pink',        rarity: 'uncommon', equipped: false },
   ];
 
   private devEquipState = new Map<string, boolean>();

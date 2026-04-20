@@ -4,15 +4,17 @@ import { type AuthState } from './auth';
 const PL_CHAR_KEYS = ['male', 'female', 'male-medium', 'female-medium', 'male-dark', 'female-dark'];
 const PL_DIRS = ['south', 'south-east', 'east', 'north-east', 'north', 'north-west', 'west', 'south-west'];
 
-const PIXELLAB_DIR_MAP: Record<string, { sheetSuffix: string }> = {
-  S:  { sheetSuffix: '_south' },
-  SA: { sheetSuffix: '_south-west' },
-  A:  { sheetSuffix: '_west' },
-  WA: { sheetSuffix: '_north-west' },
-  W:  { sheetSuffix: '_north' },
-  WD: { sheetSuffix: '_north-east' },
-  D:  { sheetSuffix: '_east' },
-  SD: { sheetSuffix: '_south-east' },
+// West-facing directions reuse east textures with flipX=true (matches IsoScene).
+// PixelLab generates west frames inconsistently, so mirroring east is more reliable.
+const PIXELLAB_DIR_MAP: Record<string, { sheetSuffix: string; flipX: boolean }> = {
+  S:  { sheetSuffix: '_south',       flipX: false },
+  SA: { sheetSuffix: '_south-east',  flipX: true  },
+  A:  { sheetSuffix: '_east',        flipX: true  },
+  WA: { sheetSuffix: '_north-east',  flipX: true  },
+  W:  { sheetSuffix: '_north',       flipX: false },
+  WD: { sheetSuffix: '_north-east',  flipX: false },
+  D:  { sheetSuffix: '_east',        flipX: false },
+  SD: { sheetSuffix: '_south-east',  flipX: false },
 };
 
 const MOVE_SPEED = 180;
@@ -48,7 +50,8 @@ export class LobbyScene extends Phaser.Scene {
   private inQueue = false;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private lobbyRoom: any = null;
-  private otherPlayers = new Map<string, { sprite: Phaser.GameObjects.Sprite; label: Phaser.GameObjects.Text; targetX: number; targetY: number }>();
+  private otherPlayers = new Map<string, { sprite: Phaser.GameObjects.Sprite; label: Phaser.GameObjects.Text; targetX: number; targetY: number; bubble?: Phaser.GameObjects.Text }>();
+  private localBubble?: Phaser.GameObjects.Text;
   private playerLabel!: Phaser.GameObjects.Text;
   private lastSentX = 0;
   private lastSentY = 0;
@@ -227,15 +230,18 @@ export class LobbyScene extends Phaser.Scene {
         this.playerFacing = dir;
         this.player.play(walkKey, true);
       }
+      this.player.setFlipX(PIXELLAB_DIR_MAP[dir].flipX);
     } else {
       const idleKey = `${this.charKey}_idle_${this.playerFacing}`;
       if (!this.player.anims.currentAnim?.key.includes('idle')) {
         this.player.play(idleKey, true);
       }
+      this.player.setFlipX(PIXELLAB_DIR_MAP[this.playerFacing].flipX);
     }
 
-    // Update name label position
+    // Update name label + speech bubble position
     this.playerLabel.setPosition(this.playerX, this.playerY - 55);
+    this.localBubble?.setPosition(this.playerX, this.playerY - 70);
 
     // Send position to lobby room — always send on movement state change
     if (this.lobbyRoom) {
@@ -254,6 +260,7 @@ export class LobbyScene extends Phaser.Scene {
       other.sprite.x += (other.targetX - other.sprite.x) * 0.15;
       other.sprite.y += (other.targetY - other.sprite.y) * 0.15;
       other.label.setPosition(other.sprite.x, other.sprite.y - 55);
+      other.bubble?.setPosition(other.sprite.x, other.sprite.y - 70);
     }
 
     // E prompt
@@ -344,6 +351,7 @@ export class LobbyScene extends Phaser.Scene {
 
     const playerName = this.authState?.username ?? 'Player';
     this.lobbyRoom = await client.joinOrCreate('lobby', { playerName, charKey: this.charKey });
+    console.log(`[LobbyScene] connected to lobby room ${this.lobbyRoom.roomId}, sessionId=${this.lobbyRoom.sessionId}`);
 
     this.lobbyRoom.onMessage('lobbyState', (data: { players: { sessionId: string; playerName: string; x: number; y: number; facing: string; moving: boolean; charKey: string }[] }) => {
       const myId = this.lobbyRoom?.sessionId;
@@ -369,17 +377,20 @@ export class LobbyScene extends Phaser.Scene {
 
         // Update animation
         const charKey = p.charKey || 'male';
+        const facing = p.facing || 'SD';
+        const flip = PIXELLAB_DIR_MAP[facing]?.flipX ?? false;
         if (p.moving) {
-          const walkKey = `${charKey}_walk_${p.facing}`;
+          const walkKey = `${charKey}_walk_${facing}`;
           if (other.sprite.anims.currentAnim?.key !== walkKey) {
             other.sprite.play(walkKey, true);
           }
         } else {
-          const idleKey = `${charKey}_idle_${p.facing}`;
+          const idleKey = `${charKey}_idle_${facing}`;
           if (!other.sprite.anims.currentAnim?.key.includes('idle')) {
             other.sprite.play(idleKey, true);
           }
         }
+        other.sprite.setFlipX(flip);
       }
 
       // Remove disconnected players
@@ -943,20 +954,20 @@ export class LobbyScene extends Phaser.Scene {
 
   private showSpeechBubble(sessionId: string, message: string): void {
     const truncated = message.length > 40 ? message.slice(0, 40) + '...' : message;
-
-    // Find the sprite — either local player or other player
     const myId = this.lobbyRoom?.sessionId;
-    let x: number, y: number;
+    const isLocal = sessionId === myId;
 
-    if (sessionId === myId) {
-      x = this.playerX;
-      y = this.playerY - 70;
+    // Destroy previous bubble for this player
+    if (isLocal) {
+      this.localBubble?.destroy();
     } else {
       const other = this.otherPlayers.get(sessionId);
       if (!other) return;
-      x = other.sprite.x;
-      y = other.sprite.y - 70;
+      other.bubble?.destroy();
     }
+
+    const x = isLocal ? this.playerX : this.otherPlayers.get(sessionId)!.sprite.x;
+    const y = isLocal ? this.playerY - 70 : this.otherPlayers.get(sessionId)!.sprite.y - 70;
 
     const bubble = this.add.text(x, y, truncated, {
       fontSize: '11px',
@@ -966,14 +977,27 @@ export class LobbyScene extends Phaser.Scene {
       padding: { x: 6, y: 3 },
     }).setOrigin(0.5, 1).setDepth(50);
 
+    // Store reference so update() can track position
+    if (isLocal) {
+      this.localBubble = bubble;
+    } else {
+      this.otherPlayers.get(sessionId)!.bubble = bubble;
+    }
+
     // Fade out after 3 seconds
     this.tweens.add({
       targets: bubble,
       alpha: 0,
-      y: y - 20,
       duration: 3000,
       delay: 2000,
-      onComplete: () => bubble.destroy(),
+      onComplete: () => {
+        bubble.destroy();
+        if (isLocal && this.localBubble === bubble) this.localBubble = undefined;
+        else {
+          const o = this.otherPlayers.get(sessionId);
+          if (o?.bubble === bubble) o.bubble = undefined;
+        }
+      },
     });
   }
 
