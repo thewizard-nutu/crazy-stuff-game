@@ -350,7 +350,8 @@ export class LobbyScene extends Phaser.Scene {
     const client = new Client(wsUrl);
 
     const playerName = this.authState?.username ?? 'Player';
-    this.lobbyRoom = await client.joinOrCreate('lobby', { playerName, charKey: this.charKey });
+    const token = this.authState?.session?.access_token;
+    this.lobbyRoom = await client.joinOrCreate('lobby', { playerName, charKey: this.charKey, token });
     console.log(`[LobbyScene] connected to lobby room ${this.lobbyRoom.roomId}, sessionId=${this.lobbyRoom.sessionId}`);
 
     this.lobbyRoom.onMessage('lobbyState', (data: { players: { sessionId: string; playerName: string; x: number; y: number; facing: string; moving: boolean; charKey: string }[] }) => {
@@ -426,9 +427,9 @@ export class LobbyScene extends Phaser.Scene {
       const wsUrl = `${protocol}//${host}:${wsPort}`;
       const client = new Client(wsUrl);
 
-      const authId = this.authState?.session?.user?.id;
       const playerName = this.authState?.username ?? 'Player';
-      this.queueRoom = await client.joinOrCreate('queue', { playerName, authId });
+      const token = this.authState?.session?.access_token;
+      this.queueRoom = await client.joinOrCreate('queue', { playerName, token });
 
       this.showQueueUI();
 
@@ -570,10 +571,17 @@ export class LobbyScene extends Phaser.Scene {
     return `${protocol}//${host}:${apiPort}`;
   }
 
+  private authHeader(): Record<string, string> {
+    const token = this.authState?.session?.access_token;
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  }
+
   /** Load the player's equipped character from the server on scene start. */
   private async loadEquippedChar(authId: string): Promise<void> {
     try {
-      const resp = await fetch(`${this.apiBase()}/api/player/${authId}/equipped-char`);
+      const resp = await fetch(`${this.apiBase()}/api/player/${authId}/equipped-char`, {
+        headers: this.authHeader(),
+      });
       if (!resp.ok) return;
       const { charKey } = await resp.json();
       if (charKey && PL_CHAR_KEYS.includes(charKey)) {
@@ -591,7 +599,7 @@ export class LobbyScene extends Phaser.Scene {
     try {
       const resp = await fetch(`${this.apiBase()}/api/player/${authId}/equip-char`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...this.authHeader() },
         body: JSON.stringify({ charKey }),
       });
       return resp.ok;
@@ -772,7 +780,9 @@ export class LobbyScene extends Phaser.Scene {
 
     try {
       const username = encodeURIComponent(this.authState?.username ?? 'Player');
-      const resp = await fetch(`${this.apiBase()}/api/player/${authId}?username=${username}`);
+      const resp = await fetch(`${this.apiBase()}/api/player/${authId}?username=${username}`, {
+        headers: this.authHeader(),
+      });
       if (!resp.ok) {
         container.innerHTML = '<div style="color: #888; text-align: center;">Could not load profile</div>';
         return;
@@ -1105,7 +1115,9 @@ export class LobbyScene extends Phaser.Scene {
 
     let items: any[];
     try {
-      const resp = await fetch(`${this.apiBase()}/api/player/${authId}/inventory`);
+      const resp = await fetch(`${this.apiBase()}/api/player/${authId}/inventory`, {
+        headers: this.authHeader(),
+      });
       if (!resp.ok) throw new Error('fetch failed');
       items = await resp.json();
     } catch {
@@ -1266,7 +1278,7 @@ export class LobbyScene extends Phaser.Scene {
     try {
       await fetch(`${this.apiBase()}/api/player/${authId}/equip`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...this.authHeader() },
         body: JSON.stringify({ inventoryItemId: itemId, equipped: equip }),
       });
       // Re-fetch and re-render in place if we have the container

@@ -1,5 +1,6 @@
 import { Room, Client } from 'colyseus';
 import { Schema, type, ArraySchema } from '@colyseus/schema';
+import { verifyToken } from '../auth/jwt';
 
 class QueuePlayer extends Schema {
   @type('string') sessionId = '';
@@ -35,14 +36,24 @@ export class QueueRoom extends Room<QueueState> {
     console.log('[QueueRoom] created');
   }
 
-  onJoin(client: Client, options: { playerName?: string; authId?: string }): void {
+  /** See design/gdd/03-authentication.md §3.7 — guests allowed, but tokens (if supplied) must verify. */
+  onAuth(_client: Client, options: { token?: string }): { authId: string | null; username: string | null } | false {
+    if (!options?.token) return { authId: null, username: null };
+    const payload = verifyToken(options.token);
+    if (!payload) return false;
+    return { authId: payload.sub, username: payload.username };
+  }
+
+  onJoin(client: Client, options: { playerName?: string }, auth?: { authId: string | null; username: string | null }): void {
+    const authId = auth?.authId ?? null;
+
     const player = new QueuePlayer();
     player.sessionId = client.sessionId;
-    player.playerName = (options?.playerName ?? 'Player').replace(/[^a-zA-Z0-9 ]/g, '').slice(0, 20).trim() || 'Player';
+    player.playerName = (options?.playerName ?? auth?.username ?? 'Player').replace(/[^a-zA-Z0-9 ]/g, '').slice(0, 20).trim() || 'Player';
     player.ready = false;
     this.state.players.push(player);
 
-    if (options?.authId) this.authIds.set(client.sessionId, options.authId);
+    if (authId) this.authIds.set(client.sessionId, authId);
 
     this.broadcast('playerList', this.getPlayerList());
     console.log(`[QueueRoom] joined: ${player.playerName} (${this.state.players.length}/${MAX_PLAYERS})`);

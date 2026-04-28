@@ -5,22 +5,11 @@ import {
   findUserByEmail, findUserByUsername, findUserByGoogleSub, createUser, createGoogleUser,
   getUserById, getOrCreatePlayer,
 } from '../db/mongo';
+import { JWT_SECRET, signToken, type JwtPayload } from './jwt';
 
 const router = Router();
 
-const JWT_SECRET = process.env.JWT_SECRET ?? 'dev-secret-change-me';
 const GOOGLE_CLIENT_ID = '1010797437683-acc3bke8o6qsj69370700vbfk6chbmep.apps.googleusercontent.com';
-
-interface JwtPayload {
-  sub: string;
-  username: string;
-  email?: string;
-}
-
-function signToken(user: { _id: any; username: string; email?: string }): string {
-  const payload: JwtPayload = { sub: user._id.toString(), username: user.username, email: user.email };
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
-}
 
 function cleanUsername(raw: string): string {
   return raw.replace(/[^a-zA-Z0-9 ]/g, '').slice(0, 20).trim() || 'Player';

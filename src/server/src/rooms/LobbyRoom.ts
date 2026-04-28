@@ -1,5 +1,6 @@
 import { Room, Client } from 'colyseus';
 import { Schema, type } from '@colyseus/schema';
+import { verifyToken } from '../auth/jwt';
 
 class LobbyState extends Schema {
   @type('number') playerCount = 0;
@@ -63,8 +64,16 @@ export class LobbyRoom extends Room<LobbyState> {
     console.log('[LobbyRoom] created');
   }
 
-  onJoin(client: Client, options: { playerName?: string; charKey?: string }): void {
-    const name = (options?.playerName ?? 'Player').replace(/[^a-zA-Z0-9 ]/g, '').slice(0, 20).trim() || 'Player';
+  /** See design/gdd/03-authentication.md §3.7 — lobby is guest-friendly; token (if supplied) must verify. */
+  onAuth(_client: Client, options: { token?: string }): { authId: string | null; username: string | null } | false {
+    if (!options?.token) return { authId: null, username: null };
+    const payload = verifyToken(options.token);
+    if (!payload) return false;
+    return { authId: payload.sub, username: payload.username };
+  }
+
+  onJoin(client: Client, options: { playerName?: string; charKey?: string }, auth?: { authId: string | null; username: string | null }): void {
+    const name = (options?.playerName ?? auth?.username ?? 'Player').replace(/[^a-zA-Z0-9 ]/g, '').slice(0, 20).trim() || 'Player';
     this.lobbyPlayers.set(client.sessionId, {
       sessionId: client.sessionId,
       playerName: name,

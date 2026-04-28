@@ -1693,10 +1693,10 @@ export class IsoScene extends Phaser.Scene {
     const wsPort = isDevPort ? '3000' : port;
     const wsUrl = `${protocol}//${host}:${wsPort}`;
     const client = new Client(wsUrl);
-    const authId = this.authState?.session?.user?.id;
+    const token = this.authState?.session?.access_token;
     let room;
     try {
-      room = await client.joinOrCreate('race', { playerName: name, authId });
+      room = await client.joinOrCreate('race', { playerName: name, token });
     } catch (e) {
       alert('Could not join the game. It may already be open in another tab.');
       return;
@@ -1954,7 +1954,9 @@ export class IsoScene extends Phaser.Scene {
       const port = window.location.port || (protocol === 'https:' ? '443' : '80');
       const apiDevPort = ['5173', '5174', '8080', '8081', '8082', '8083'].includes(port);
       const apiPort = apiDevPort ? '3000' : port;
-      const resp = await fetch(`${protocol}//${host}:${apiPort}/api/player/${authId}`);
+      const resp = await fetch(`${protocol}//${host}:${apiPort}/api/player/${authId}`, {
+        headers: this.authHeader(),
+      });
       if (!resp.ok) return;
       const player = await resp.json();
       this.renderProfileHud(player);
@@ -1997,6 +1999,11 @@ export class IsoScene extends Phaser.Scene {
     const isDevPort = ['5173', '5174', '8080', '8081', '8082', '8083'].includes(port);
     const apiPort = isDevPort ? '3000' : port;
     return `${protocol}//${host}:${apiPort}`;
+  }
+
+  private authHeader(): Record<string, string> {
+    const token = this.authState?.session?.access_token;
+    return token ? { Authorization: `Bearer ${token}` } : {};
   }
 
   private static readonly SLOT_META: Record<string, { label: string; icon: string }> = {
@@ -2145,7 +2152,9 @@ export class IsoScene extends Phaser.Scene {
       }));
     } else {
       try {
-        const resp = await fetch(`${this.apiBase()}/api/player/${authId}/inventory`);
+        const resp = await fetch(`${this.apiBase()}/api/player/${authId}/inventory`, {
+          headers: this.authHeader(),
+        });
         if (!resp.ok) throw new Error('fetch failed');
         items = await resp.json();
       } catch {
@@ -2325,7 +2334,7 @@ export class IsoScene extends Phaser.Scene {
     try {
       await fetch(`${this.apiBase()}/api/player/${authId}/equip`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...this.authHeader() },
         body: JSON.stringify({ inventoryItemId: itemId, equipped: equip }),
       });
       // Tell server to re-fetch and broadcast our loadout to all players

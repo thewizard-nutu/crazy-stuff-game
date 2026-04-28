@@ -10,6 +10,7 @@ import { LobbyRoom } from './rooms/LobbyRoom';
 import { QueueRoom } from './rooms/QueueRoom';
 import { RaceRoom } from './rooms/RaceRoom';
 import { authRouter } from './auth/routes';
+import { requireOwnership } from './auth/middleware';
 import { connectDB } from './db/mongo';
 import {
   getOrCreatePlayer, getPlayer, getEquippedChar, equipChar,
@@ -32,6 +33,10 @@ app.use(express.static(clientDist));
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });
 });
+
+// All /api/player/:userId/* routes require a valid JWT whose subject matches :userId.
+// See design/gdd/03-authentication.md §3.7 for the contract.
+app.use('/api/player/:userId', requireOwnership);
 
 // Player profile API
 app.get('/api/player/:userId', async (req, res) => {

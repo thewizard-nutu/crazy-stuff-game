@@ -57,7 +57,11 @@ export async function findUserByEmail(email: string) {
 }
 
 export async function findUserByUsername(username: string) {
-  return db.collection('users').findOne({ username });
+  // Case-insensitive lookup — users who registered "PlayerOne" can log in as "playerone".
+  return db.collection('users').findOne(
+    { username },
+    { collation: { locale: 'en', strength: 2 } },
+  );
 }
 
 export async function findUserByGoogleSub(googleSub: string) {

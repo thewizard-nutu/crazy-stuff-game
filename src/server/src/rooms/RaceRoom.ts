@@ -1,6 +1,7 @@
 import { Room, Client } from 'colyseus';
 import { Schema, ArraySchema, type } from '@colyseus/schema';
 import { awardPostRace, getOrCreatePlayer, getLoadout, getEquippedChar } from '../db/mongo';
+import { verifyToken } from '../auth/jwt';
 import {
   Terrain, generateTerrainMap, generateButtons, generatePickups,
   GRID_COL_MAX, GRID_ROW_MAX, SPAWN_X, SPAWN_Y,
@@ -222,11 +223,26 @@ export class RaceRoom extends Room<RaceState> {
     this.collectedPickups.clear();
   }
 
-  onJoin(client: Client, options: { playerName?: string; authId?: string }): void {
+  /**
+   * Verify the JWT (if supplied) and derive authId from its sub claim.
+   * Guests (no token) are allowed — they get no authId. Invalid tokens reject the join.
+   * See design/gdd/03-authentication.md §3.7 and design/gdd/10-race-room.md §5.6.4.
+   */
+  onAuth(_client: Client, options: { token?: string }): { authId: string | null; username: string | null } | false {
+    if (!options?.token) return { authId: null, username: null };
+    const payload = verifyToken(options.token);
+    if (!payload) return false;
+    return { authId: payload.sub, username: payload.username };
+  }
+
+  onJoin(client: Client, options: { playerName?: string }, auth?: { authId: string | null; username: string | null }): void {
+    // Server-derived authId — never trust client-supplied value.
+    const authId = auth?.authId ?? null;
+
     // Prevent duplicate sessions from the same auth account
-    if (options?.authId) {
+    if (authId) {
       for (const [sid, aid] of this.authIds) {
-        if (aid === options.authId) {
+        if (aid === authId) {
           client.send('error', { message: 'Already in this room from another tab' });
           client.leave();
           return;
@@ -241,9 +257,9 @@ export class RaceRoom extends Room<RaceState> {
     const spawnY = SPAWN_Y - 4 + idx * 2; // 5 players spaced 1 tile apart
 
     slot.sessionId = client.sessionId;
-    const rawName = (options?.playerName ?? 'Player').replace(/[^a-zA-Z0-9 ]/g, '').slice(0, 20).trim();
+    const rawName = (options?.playerName ?? auth?.username ?? 'Player').replace(/[^a-zA-Z0-9 ]/g, '').slice(0, 20).trim();
     slot.playerName = rawName || 'Player';
-    if (options?.authId) this.authIds.set(client.sessionId, options.authId);
+    if (authId) this.authIds.set(client.sessionId, authId);
     slot.tileX = SPAWN_X;
     slot.tileY = spawnY;
     slot.occupied = true;
@@ -263,8 +279,8 @@ export class RaceRoom extends Room<RaceState> {
     this.broadcastState();
 
     // Fetch and broadcast equipment loadout (async, non-blocking)
-    if (options?.authId) {
-      this.fetchAndBroadcastLoadout(client.sessionId, options.authId, idx).catch(
+    if (authId) {
+      this.fetchAndBroadcastLoadout(client.sessionId, authId, idx).catch(
         e => console.error('[RaceRoom] loadout fetch error:', e)
       );
     }
